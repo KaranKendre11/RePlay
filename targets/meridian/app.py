@@ -12,7 +12,7 @@ Structure notes, since the unpleasantness is deliberate:
 
 import hashlib
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
@@ -33,22 +33,75 @@ SESSION_LIFETIME = timedelta(minutes=30)
 
 @dataclass(frozen=True)
 class Variant:
-    """A tenant-specific skin of the same vendor product.
+    """One tenant's deployment of the same vendor product.
 
-    Present from the start because M11 replays one artifact against two
-    variants. Keeping the seam here costs nothing now and avoids retrofitting
-    a second app later.
+    The differences are the ones that actually occur in the field: the vendor
+    ships a configurable product, and each institution renames labels, moves
+    fields, and mounts the app under its own path. Nothing here changes what
+    the flow *does* — which is the entire premise of reusing one recorded
+    capability across tenants.
+
+    Every difference below is chosen to break a specific tier of the locator
+    ladder, so replaying the base artifact against this variant is a real test
+    rather than a re-skin:
+
+    * ``labels`` breaks label-adjacency (tier 3)
+    * ``buttons`` breaks role+name (tier 1)
+    * ``fields`` breaks the CSS fallback (tier 5)
+    * ``prefix`` breaks the recorded URLs
     """
 
     key: str
     brand: str
     brand_color: str
     teller: str
+    prefix: str = ""
+    labels: dict[str, str] = field(default_factory=dict)
+    buttons: dict[str, str] = field(default_factory=dict)
+    fields: dict[str, str] = field(default_factory=dict)
 
+
+BASE_LABELS = {
+    "member_id": "Member ID",
+    "branch": "Branch",
+    "name": "Name",
+    "status": "Status",
+    "product": "Product Code",
+    "deposit": "Opening Deposit",
+    "nickname": "Nickname",
+    "balance": "Current Balance",
+    "account_no": "Account No",
+    "kind": "Type",
+}
+BASE_BUTTONS = {"search": "Search", "submit": "Submit", "open": "Open Sub-Account"}
+BASE_FIELDS = {
+    "member_id": "f7",
+    "branch": "f9",
+    "product": "f12",
+    "deposit": "f13",
+    "nickname": "f14",
+}
 
 VARIANTS: dict[str, Variant] = {
-    "base": Variant("base", "MERIDIAN CORE", "#1a3a6b", "TLR0431"),
-    "northgate": Variant("northgate", "NORTHGATE FCU / MERIDIAN", "#5b1a1a", "TLR8802"),
+    "base": Variant(
+        key="base",
+        brand="MERIDIAN CORE",
+        brand_color="#1a3a6b",
+        teller="TLR0431",
+        labels=BASE_LABELS,
+        buttons=BASE_BUTTONS,
+        fields=BASE_FIELDS,
+    ),
+    "northgate": Variant(
+        key="northgate",
+        brand="NORTHGATE FCU / MERIDIAN",
+        brand_color="#5b1a1a",
+        teller="TLR8802",
+        prefix="/tlr",
+        labels={**BASE_LABELS, "member_id": "Member Number", "balance": "Balance"},
+        buttons={**BASE_BUTTONS, "search": "Find", "open": "New Sub-Account"},
+        fields={**BASE_FIELDS, "member_id": "f21"},
+    ),
 }
 
 
@@ -57,6 +110,7 @@ def create_app(variant: str = "base", secret_key: str = "meridian-dev-only") -> 
     app.secret_key = secret_key
     app.permanent_session_lifetime = SESSION_LIFETIME
     skin = VARIANTS[variant]
+    at = skin.prefix  # every route hangs off the tenant's mount point
 
     # ---------- helpers ----------
 
@@ -69,6 +123,9 @@ def create_app(variant: str = "base", secret_key: str = "meridian-dev-only") -> 
             "screen_code": screen_code,
             "title": f"{skin.brand} {screen_code}",
             "session_short": session.get("sid", "-")[:8],
+            "labels": skin.labels,
+            "buttons": skin.buttons,
+            "fields": skin.fields,
             **extra,
         }
 
@@ -141,7 +198,7 @@ def create_app(variant: str = "base", secret_key: str = "meridian-dev-only") -> 
 
     # ---------- screens ----------
 
-    @app.route("/")
+    @app.route(f"{at}/")
     def frameset():
         injection = current_injection()
         return render_template(
@@ -149,18 +206,18 @@ def create_app(variant: str = "base", secret_key: str = "meridian-dev-only") -> 
             start_url=url_for("search") + inject_qs(injection),
         )
 
-    @app.route("/reset")
+    @app.route(f"{at}/reset")
     def root_reset():
         """Clear session state. Used by tests to make injections repeatable."""
         session.clear()
         start_session()
         return notice("SESSION RESET", "SYS-0000", "New session established.")
 
-    @app.route("/nav")
+    @app.route(f"{at}/nav")
     def nav():
         return render_template("nav.html", **chrome("NAV0001"))
 
-    @app.route("/search")
+    @app.route(f"{at}/search")
     def search():
         injection = current_injection()
         return render_template(
@@ -168,11 +225,11 @@ def create_app(variant: str = "base", secret_key: str = "meridian-dev-only") -> 
             **chrome("INQ0100", inject=injection.value if injection else "", message=None),
         )
 
-    @app.route("/member")
+    @app.route(f"{at}/member")
     def member_lookup():
         """Search submit target. Renders detail, or a business-outcome notice."""
         injection = current_injection()
-        member_id = (request.args.get("f7") or "").strip()
+        member_id = (request.args.get(skin.fields["member_id"]) or "").strip()
 
         if not member_id:
             return render_template(
@@ -213,7 +270,7 @@ def create_app(variant: str = "base", secret_key: str = "meridian-dev-only") -> 
             **chrome("INQ0200", member=member, inject_qs=inject_qs(injection)),
         )
 
-    @app.route("/member/<member_id>")
+    @app.route(f"{at}/member/<member_id>")
     def member_detail(member_id: str):
         injection = current_injection()
         member = find_member(member_id)
@@ -229,7 +286,7 @@ def create_app(variant: str = "base", secret_key: str = "meridian-dev-only") -> 
             **chrome("INQ0200", member=member, inject_qs=inject_qs(injection)),
         )
 
-    @app.route("/member/<member_id>/subaccount/new")
+    @app.route(f"{at}/member/<member_id>/subaccount/new")
     def subaccount_new(member_id: str):
         injection = current_injection()
         member = find_member(member_id)
@@ -250,7 +307,7 @@ def create_app(variant: str = "base", secret_key: str = "meridian-dev-only") -> 
             ),
         )
 
-    @app.route("/member/<member_id>/subaccount", methods=["POST"])
+    @app.route(f"{at}/member/<member_id>/subaccount", methods=["POST"])
     def subaccount_create(member_id: str):
         injection = current_injection()
         member = find_member(member_id)
@@ -262,9 +319,9 @@ def create_app(variant: str = "base", secret_key: str = "meridian-dev-only") -> 
                 back=url_for("search"),
             )
 
-        product = (request.form.get("f12") or "").strip()
-        deposit = (request.form.get("f13") or "").strip()
-        nickname = (request.form.get("f14") or "").strip()
+        product = (request.form.get(skin.fields["product"]) or "").strip()
+        deposit = (request.form.get(skin.fields["deposit"]) or "").strip()
+        nickname = (request.form.get(skin.fields["nickname"]) or "").strip()
 
         reason = _validation_error(injection, product, deposit)
         if reason:

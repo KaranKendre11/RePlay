@@ -86,7 +86,8 @@
       },
       "waits": [],
       "on_error": [],
-      "risk": "safe"
+      "risk": "safe",
+      "expected_tier": 3
     },
     {
       "id": "s3",
@@ -114,7 +115,8 @@
         }
       ],
       "on_error": [],
-      "risk": "safe"
+      "risk": "safe",
+      "expected_tier": 1
     },
     {
       "id": "s4",
@@ -142,7 +144,8 @@
         }
       ],
       "on_error": [],
-      "risk": "safe"
+      "risk": "safe",
+      "expected_tier": 1
     },
     {
       "id": "s5",
@@ -173,7 +176,8 @@
       },
       "waits": [],
       "on_error": [],
-      "risk": "safe"
+      "risk": "safe",
+      "expected_tier": 3
     },
     {
       "id": "s6",
@@ -204,7 +208,8 @@
       },
       "waits": [],
       "on_error": [],
-      "risk": "safe"
+      "risk": "safe",
+      "expected_tier": 3
     },
     {
       "id": "s7",
@@ -260,7 +265,8 @@
           "max_attempts": 2
         }
       ],
-      "risk": "irreversible"
+      "risk": "irreversible",
+      "expected_tier": 1
     },
     {
       "id": "s8",
@@ -289,7 +295,8 @@
       },
       "waits": [],
       "on_error": [],
-      "risk": "safe"
+      "risk": "safe",
+      "expected_tier": 4
     }
   ],
   "outcomes": [
@@ -341,7 +348,7 @@
     "requires_approval": true
   },
   "provenance": {
-    "recorded_at": "2026-09-06T21:13:32.771129Z",
+    "recorded_at": "2026-09-06T22:03:56.539941Z",
     "recorded_by": "discovery",
     "model": "gpt-5",
     "run_id": "discovery-20260906T211130Z",

@@ -11,9 +11,9 @@
   <table>
     <tr><td colspan="2"><b>OPEN SUB-ACCOUNT</b> &nbsp; {{ member.name }}</td></tr>
     <tr>
-      <td>Product Code</td>
+      <td>{{ labels.product }}</td>
       <td>
-        <select name="f12">
+        <select name="{{ fields.product }}">
           <option value="">(select)</option>
           <option value="S02">S02 - REGULAR SAVINGS</option>
           <option value="S07">S07 - HOLIDAY CLUB</option>
@@ -22,14 +22,14 @@
       </td>
     </tr>
     <tr>
-      <td>Opening Deposit</td>
-      <td><input type="text" name="f13" size="12"></td>
+      <td>{{ labels.deposit }}</td>
+      <td><input type="text" name="{{ fields.deposit }}" size="12"></td>
     </tr>
     <tr>
-      <td>Nickname</td>
-      <td><input type="text" name="f14" size="20" maxlength="24"></td>
+      <td>{{ labels.nickname }}</td>
+      <td><input type="text" name="{{ fields.nickname }}" size="20" maxlength="24"></td>
     </tr>
-    <tr><td></td><td><input type="submit" value="Submit"></td></tr>
+    <tr><td></td><td><input type="submit" value="{{ buttons.submit }}"></td></tr>
   </table>
   {% if inject %}<input type="hidden" name="inject" value="{{ inject }}">{% endif %}
 </form>

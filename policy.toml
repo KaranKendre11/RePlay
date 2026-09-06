@@ -7,8 +7,14 @@
 # Hosts the automation may navigate to. Glob patterns against host:port.
 domains = ["127.0.0.1:8080", "127.0.0.1:8081", "localhost:8080", "localhost:8081"]
 
-# Paths it may reach within those hosts.
-routes = ["/", "/search", "/nav", "/member/*", "/member", "/reset"]
+# Paths it may reach within those hosts. Tenants mount the same vendor product
+# at different points — Northgate serves it under /tlr — so each mount point is
+# listed explicitly rather than widening this to "/*". A capability reaching a
+# path nobody allowlisted is the signal worth keeping.
+routes = [
+  "/", "/search", "/nav", "/member/*", "/member", "/reset",
+  "/tlr", "/tlr/", "/tlr/search", "/tlr/nav", "/tlr/member", "/tlr/member/*", "/tlr/reset",
+]
 
 # Deny beats allow. These exist because a broader rule above was too generous.
 denied_routes = ["/admin/*", "/transfer/*", "/wire/*"]

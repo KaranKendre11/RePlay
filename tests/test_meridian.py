@@ -182,9 +182,15 @@ def test_no_automation_affordances_in_templates(banned):
     assert banned not in _template_source().lower()
 
 
-def test_form_fields_use_opaque_names():
-    """Field names carry no meaning, exactly as in a real core banking screen."""
-    names = set(re.findall(r'name="(f\d+)"', _template_source()))
+def test_form_fields_use_opaque_names(client):
+    """Field names carry no meaning, exactly as in a real core banking screen.
+
+    Checked against rendered pages rather than template source: the names are
+    per-tenant now, and what matters is what the browser actually sees.
+    """
+    rendered = markup(client.get("/search").get_data(as_text=True))
+    rendered += markup(client.get(f"/member/{MEMBER}/subaccount/new").get_data(as_text=True))
+    names = set(re.findall(r'name="(f\d+)"', rendered))
     assert {"f7", "f12", "f13", "f14"} <= names
 
 

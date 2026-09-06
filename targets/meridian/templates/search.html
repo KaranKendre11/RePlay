@@ -13,13 +13,13 @@
       <td colspan="2"><b>MEMBER INQUIRY</b></td>
     </tr>
     <tr>
-      <td>Member ID</td>
-      <td><input type="text" name="f7" size="14" maxlength="10"></td>
+      <td>{{ labels.member_id }}</td>
+      <td><input type="text" name="{{ fields.member_id }}" size="14" maxlength="10"></td>
     </tr>
     <tr>
-      <td>Branch</td>
+      <td>{{ labels.branch }}</td>
       <td>
-        <select name="f9">
+        <select name="{{ fields.branch }}">
           <option value="">(all)</option>
           <option value="0042">0042 - RIVERSIDE</option>
           <option value="0017">0017 - NORTHGATE</option>
@@ -28,7 +28,7 @@
     </tr>
     <tr>
       <td></td>
-      <td><input type="submit" value="Search"></td>
+      <td><input type="submit" value="{{ buttons.search }}"></td>
     </tr>
   </table>
   {% if inject %}<input type="hidden" name="inject" value="{{ inject }}">{% endif %}

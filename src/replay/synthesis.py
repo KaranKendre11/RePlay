@@ -333,6 +333,7 @@ def _steps_and_outputs(
             # where a checkpoint is there to catch them.
             on_error=list(recoveries) if action.step_id == last_navigating else [],
             risk=classify_risk(action),
+            expected_tier=action.tier_used,
         )
         steps.append(step)
 

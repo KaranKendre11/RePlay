@@ -10,17 +10,17 @@
   <tr>
     <td>
       <table>
-        <tr><td>Member ID</td><td><b>{{ member.member_id }}</b></td></tr>
-        <tr><td>Name</td><td><b>{{ member.name }}</b></td></tr>
-        <tr><td>Branch</td><td>{{ member.branch }}</td></tr>
-        <tr><td>Status</td><td>{{ member.status }}</td></tr>
+        <tr><td>{{ labels.member_id }}</td><td><b>{{ member.member_id }}</b></td></tr>
+        <tr><td>{{ labels.name }}</td><td><b>{{ member.name }}</b></td></tr>
+        <tr><td>{{ labels.branch }}</td><td>{{ member.branch }}</td></tr>
+        <tr><td>{{ labels.status }}</td><td>{{ member.status }}</td></tr>
       </table>
     </td>
   </tr>
   <tr>
     <td>
       <table border="1" cellspacing="0">
-        <tr><th>Type</th><th>Account No</th><th>Current Balance</th><th>Status</th></tr>
+        <tr><th>{{ labels.kind }}</th><th>{{ labels.account_no }}</th><th>{{ labels.balance }}</th><th>{{ labels.status }}</th></tr>
         {% for acct in member.accounts %}
         <tr>
           <td>{{ acct.kind }}</td>
@@ -34,7 +34,7 @@
   </tr>
   <tr>
     <td>
-      <a href="{{ url_for('subaccount_new', member_id=member.member_id) }}{{ inject_qs }}">Open Sub-Account</a>
+      <a href="{{ url_for('subaccount_new', member_id=member.member_id) }}{{ inject_qs }}">{{ buttons.open }}</a>
     </td>
   </tr>
 </table>

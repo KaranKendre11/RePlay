@@ -1,5 +1,12 @@
 """Capability artifacts: the typed, versioned contract at the centre of RePlay."""
 
+from replay.artifact.overrides import (
+    OverrideRejected,
+    OverrideStore,
+    VariantOverride,
+    apply_override,
+    specialise,
+)
 from replay.artifact.schema import (
     SCHEMA_VERSION,
     Action,
@@ -31,13 +38,18 @@ __all__ = [
     "BusinessOutcome",
     "CapabilityArtifact",
     "OutputSpec",
+    "OverrideRejected",
+    "OverrideStore",
     "ParamRef",
     "ParamSpec",
     "RiskClass",
     "Step",
     "SurfaceKind",
     "TargetSpec",
+    "VariantOverride",
+    "apply_override",
     "invocation_schema",
     "json_schema",
     "serialize",
+    "specialise",
 ]
