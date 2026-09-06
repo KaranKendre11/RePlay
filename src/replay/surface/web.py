@@ -3,9 +3,17 @@
 Built against MERIDIAN CORE, whose measured behaviour (#2, #3) dictated three
 things here that a modern-web implementation would get wrong:
 
-* **Everything is frame-scoped.** Under a ``<frameset>`` the top document never
-  navigates, so a page-level navigation wait blocks until timeout. Queries,
-  waits and URL assertions all take a frame.
+* **Everything is frame-scoped, and the frame that moves is not always the one
+  you clicked in.** Under a ``<frameset>`` the top document never navigates, so
+  a page-level wait blocks until timeout; and a link carrying
+  ``target="workframe"`` navigates a sibling frame, so waiting on the link's own
+  frame does too. The destination is resolved from the control's ``target``
+  attribute before waiting.
+* **``expect_navigation`` is not merely a wait.** It is the only thing that makes
+  Playwright refresh a frame's URL here. Without it, under a frameset,
+  ``Frame.url`` stays stale indefinitely and no ``framenavigated`` event ever
+  fires — even though the document has demonstrably changed. Measured, not
+  assumed.
 * **The ladder is tried per target.** On this app tier 1 resolves every button
   and not one text input, so falling back is the normal case, not an error path.
 * **Dialogs are answered deliberately.** The default is to dismiss. A confirm()
@@ -200,6 +208,31 @@ class WebSurface:
                 raise FrameNotFound(f"no attached frame named {name!r}; available: {available}")
             frame = child
         return frame
+
+    def _navigation_frame(self, handle: PWLocator, own: Frame) -> Frame:
+        """Which frame this control will actually navigate.
+
+        A link in the nav frame carries ``target="workframe"``, so the frame
+        that changes is not the frame holding the link. Waiting on the link's
+        own frame times out every time — which is what happened to a real
+        discovery run, six times in twenty steps, before this existed.
+
+        The ``target`` attribute is read here rather than reasoned about
+        upstream: it is markup, and markup stays inside this module.
+        """
+        try:
+            named = handle.get_attribute("target", timeout=1_000)
+        except (PlaywrightError, PlaywrightTimeout):
+            return own
+        if not named or named.startswith("_"):
+            return own
+        for path in self._frame_paths():
+            if path and path[-1] == named:
+                try:
+                    return self.frame_for(path)
+                except FrameNotFound:
+                    break
+        return own
 
     def _frame_paths(self) -> list[list[str]]:
         paths: list[list[str]] = []
@@ -464,7 +497,6 @@ class WebSurface:
                 raise SurfaceError(f"{action.value} requires a target")
 
             resolution = self.resolve(target, timeout_ms=timeout_ms)
-            frame = self.frame_for(target.frame_path)
             handle: PWLocator = resolution.handle
 
             def perform() -> str | None:
@@ -483,18 +515,36 @@ class WebSurface:
                         raise SurfaceError(f"unsupported action {action.value!r}")
                 return None
 
+            note: str | None = None
+            navigated = False
+
             if expect_navigation:
-                # Frame-scoped. A page-level wait watches the top document,
-                # which under a frameset never navigates (#3).
-                with frame.expect_navigation(timeout=timeout_ms):
-                    read = perform()
-                navigated = True
+                # expect_navigation is not merely a wait: it is what makes
+                # Playwright refresh a frame's URL at all. Under a <frameset>,
+                # without it, Frame.url stays stale forever and no
+                # framenavigated event ever fires, even though the document has
+                # plainly changed. Measured, not assumed.
+                own = self.frame_for(target.frame_path)
+                destination = self._navigation_frame(handle, own)
+                try:
+                    with destination.expect_navigation(timeout=timeout_ms):
+                        read = perform()
+                    navigated = True
+                except PlaywrightTimeout:
+                    # The action itself succeeded; the page just did not move.
+                    # That is information, not a failure.
+                    note = self._explain_stalled_navigation(before)
             else:
                 read = perform()
-                navigated = False
 
             return self._done(
-                action, True, resolution=resolution, read=read, navigated=navigated, since=before
+                action,
+                True,
+                resolution=resolution,
+                read=read,
+                navigated=navigated,
+                since=before,
+                note=note,
             )
 
         except (PlaywrightError, PlaywrightTimeout, SurfaceError) as exc:
@@ -506,6 +556,16 @@ class WebSurface:
                 error=f"{type(exc).__name__}: {exc}".strip(),
             )
 
+    def _explain_stalled_navigation(self, since: int) -> str:
+        """Say why nothing moved, in terms the caller can act on."""
+        dialogs = self._dialogs[since:]
+        if dialogs:
+            return (
+                f"the click raised a dialog ({dialogs[-1]}) which was dismissed, so the "
+                "page did not change; accept the dialog if accepting it is required"
+            )
+        return "the click completed but no frame navigated"
+
     def _done(
         self,
         action: Action,
@@ -516,6 +576,7 @@ class WebSurface:
         navigated: bool = False,
         since: int = 0,
         error: str | None = None,
+        note: str | None = None,
     ) -> ActionOutcome:
         return ActionOutcome(
             action=action,
@@ -525,6 +586,7 @@ class WebSurface:
             navigated=navigated,
             dialogs=self._dialogs[since:],
             error=error,
+            note=note,
         )
 
     # -- evaluate ---------------------------------------------------------

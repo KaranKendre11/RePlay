@@ -1,0 +1,26 @@
+{
+  "rendered": "STEP 8 of 20\nURL: http://127.0.0.1:8080/\nHTTP STATUS: 200\nDIALOGS SO FAR: confirm: Open new sub-account for member 12345? | confirm: Open new sub-account for member 12345?\n\nCONTROLS you can act on:\n  [0] link  \"Member Inquiry\"  frame=navframe\n  [1] link  \"Account Services\"  frame=navframe\n  [2] link  \"Transaction Journal\"  frame=navframe\n  [3] link  \"Reports\"  frame=navframe\n\nVALUES you can read:\n  [4] cell  label='TELLER'  text='TLR0431'  frame=navframe\n  [5] cell  label='SESSION'  text='27c81c72'  frame=navframe\n  [6] cell  label='Member ID'  text='12345'  frame=workframe\n  [7] cell  label='New Account No'  text='12345046'  frame=workframe\n  [8] cell  label='Product'  text='S02'  frame=workframe\n  [9] cell  label='Opening Deposit'  text='50.00'  frame=workframe\n  [10] cell  label='Reference'  text='REF-12345-046'  frame=workframe",
+  "url": "http://127.0.0.1:8080/",
+  "title": "MERIDIAN CORE",
+  "http_status": 200,
+  "dialogs_seen": [
+    "confirm: Open new sub-account for member 12345?",
+    "confirm: Open new sub-account for member 12345?"
+  ],
+  "frames": [
+    {
+      "path": [
+        "navframe"
+      ],
+      "url": "http://127.0.0.1:8080/nav",
+      "aria": "- text: MERIDIAN CORE · NAV0001\n- table:\n  - rowgroup:\n    - row \"Member Inquiry\":\n      - cell \"Member Inquiry\":\n        - link \"Member Inquiry\":\n          - /url: /search\n    - row \"Account Services\":\n      - cell \"Account Services\":\n        - link \"Account Services\":\n          - /url: /search\n    - row \"Transaction Journal\":\n      - cell \"Transaction Journal\":\n        - link \"Transaction Journal\":\n          - /url: \"#\"\n    - row \"Reports\":\n      - cell \"Reports\":\n        - link \"Reports\":\n          - /url: \"#\"\n- table:\n  - rowgroup:\n    - row \"TELLER TLR0431\":\n      - cell \"TELLER\"\n      - cell \"TLR0431\"\n    - row \"SESSION 27c81c72\":\n      - cell \"SESSION\"\n      - cell \"27c81c72\""
+    },
+    {
+      "path": [
+        "workframe"
+      ],
+      "url": "http://127.0.0.1:8080/member/12345/subaccount",
+      "aria": "- text: MERIDIAN CORE · ACS0450\n- table:\n  - rowgroup:\n    - row \"SUB-ACCOUNT OPENED\":\n      - cell \"SUB-ACCOUNT OPENED\"\n    - row \"Member ID 12345\":\n      - cell \"Member ID\"\n      - cell \"12345\"\n    - row \"New Account No 12345046\":\n      - cell \"New Account No\"\n      - cell \"12345046\"\n    - row \"Product S02\":\n      - cell \"Product\"\n      - cell \"S02\"\n    - row \"Opening Deposit 50.00\":\n      - cell \"Opening Deposit\"\n      - cell \"50.00\"\n    - row \"Reference REF-12345-046\":\n      - cell \"Reference\"\n      - cell \"REF-12345-046\"\n- text: Transaction posted. Retain reference number for audit."
+    }
+  ]
+}

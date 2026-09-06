@@ -79,6 +79,8 @@ class RecordedAction:
     tier_used: int | None = None
     read_value: str | None = None
     ok: bool = True
+    navigated: bool = False
+    note: str | None = None
     error: str | None = None
 
     @classmethod
@@ -97,6 +99,8 @@ class RecordedAction:
             tier_used=payload.get("tier_used"),
             read_value=payload.get("read_value"),
             ok=bool(payload.get("ok", True)),
+            navigated=bool(payload.get("navigated", False)),
+            note=payload.get("note"),
             error=payload.get("error"),
         )
 
@@ -114,6 +118,8 @@ class RecordedAction:
             "tier_used": self.tier_used,
             "read_value": self.read_value,
             "ok": self.ok,
+            "navigated": self.navigated,
+            "note": self.note,
             "error": self.error,
         }
 
@@ -358,6 +364,8 @@ class DiscoveryLoop:
             tier_used=int(outcome.resolution.tier) if outcome.resolution else None,
             read_value=outcome.read_value,
             ok=outcome.ok,
+            navigated=outcome.navigated,
+            note=outcome.note,
             error=outcome.error,
         )
 
@@ -371,6 +379,10 @@ class DiscoveryLoop:
             summary += f" (parameter {parameter})"
         if output:
             summary += f" → recorded output {output}={outcome.read_value!r}"
+        # A note is not an error, but it is the difference between the model
+        # retrying blindly and the model understanding what it just hit.
+        if outcome.note:
+            summary += f" — NOTE: {outcome.note}"
         self._record(result, recorded, summary, outcome.ok, outcome.error)
 
     def _candidate(self, call: ToolCall, candidates: list[Candidate]) -> Candidate | None:

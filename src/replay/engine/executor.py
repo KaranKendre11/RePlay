@@ -93,12 +93,15 @@ def rebase(url: str, base: str) -> str:
     """
     recorded = urlsplit(url)
     target = urlsplit(base)
+    # The override may add a query the recording never had — that is how a
+    # failure mode gets injected at the entry point without editing the flow.
+    query = recorded.query or target.query
     return urlunsplit(
         (
             target.scheme or recorded.scheme,
             target.netloc or recorded.netloc,
             recorded.path,
-            recorded.query,
+            query,
             recorded.fragment,
         )
     )
@@ -235,11 +238,14 @@ class ReplayExecutor:
                 return
 
             if step.checkpoint is not None and not self._verify(step.checkpoint, step, report):
+                observed = self._observed()
                 result.failure = Failure(
                     step_id=step.id,
-                    failure_class=FailureClass.CHECKPOINT_UNMET,
+                    failure_class=(
+                        self._classify_screen(observed) or FailureClass.CHECKPOINT_UNMET
+                    ),
                     expected=f"checkpoint {_describe(step.checkpoint)}",
-                    observed=self._observed(),
+                    observed=observed,
                     evidence=self._capture(step.id),
                 )
                 return
@@ -335,6 +341,20 @@ class ReplayExecutor:
             case "retry":
                 self.surface.act(Action.WAIT, value="1000")
 
+    def _classify_screen(self, observed: str) -> FailureClass | None:
+        """Read the screen for conditions that outrank whatever step we are on.
+
+        A session timeout and a 500 are not "the checkpoint did not match" —
+        reporting them that way would send someone hunting for a drifted
+        locator when the truth is that the far side fell over or logged us out.
+        Those need a re-login or a human, never a retry.
+        """
+        if any(marker in observed for marker in SESSION_MARKERS):
+            return FailureClass.SESSION_LOST
+        if any(marker in observed for marker in APPLICATION_MARKERS):
+            return FailureClass.APPLICATION_ERROR
+        return None
+
     def _diagnose(self, step: Step, report: StepReport) -> Failure:
         """Turn a failed action into a classified failure.
 
@@ -346,14 +366,13 @@ class ReplayExecutor:
         error = report.error or ""
         observed = self._observed()
 
-        if any(marker in observed for marker in SESSION_MARKERS):
-            failure_class = FailureClass.SESSION_LOST
-        elif any(marker in observed for marker in APPLICATION_MARKERS):
-            failure_class = FailureClass.APPLICATION_ERROR
-        elif TargetNotFound.__name__ in error:
-            failure_class = FailureClass.TARGET_NOT_FOUND
-        else:
-            failure_class = FailureClass.ACTION_FAILED
+        failure_class = self._classify_screen(observed)
+        if failure_class is None:
+            failure_class = (
+                FailureClass.TARGET_NOT_FOUND
+                if TargetNotFound.__name__ in error
+                else FailureClass.ACTION_FAILED
+            )
 
         return Failure(
             step_id=step.id,

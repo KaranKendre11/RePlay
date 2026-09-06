@@ -354,3 +354,47 @@ def test_renavigating_the_top_document_does_not_strand_us_on_a_detached_frame(
     surface.act(Action.NAVIGATE, value=meridian_server)
     surface.act(Action.NAVIGATE, value=meridian_server)
     assert surface.resolve(MEMBER_FIELD).tier is Tier.LABEL_ADJACENT
+
+
+def test_a_link_targeting_another_frame_is_waited_on_correctly(surface):
+    """The nav frame's links carry target="workframe".
+
+    Waiting on the link's own frame times out every time — which is what
+    happened to a real discovery run, six times in twenty steps. The
+    destination is resolved from the control's target attribute instead.
+    """
+    nav_link = spec(
+        "Member Inquiry nav link",
+        RoleNameLocator(role="link", name="Member Inquiry"),
+        frame=["navframe"],
+    )
+    outcome = surface.act(Action.CLICK, nav_link, expect_navigation=True)
+
+    assert outcome.ok
+    assert outcome.navigated, "the workframe navigated even though the link is in navframe"
+    assert outcome.note is None
+
+
+def test_a_click_that_moves_nothing_explains_itself(surface):
+    """Not an error — the click worked. But the caller has to know.
+
+    Before this, a dismissed confirmation dialog surfaced only as
+    "TimeoutError", and a real discovery run had no way to learn a dialog
+    existed at all.
+    """
+    search_for(surface, "12345")
+    surface.act(
+        Action.CLICK,
+        spec("Open link", RoleNameLocator(role="link", name="Open Sub-Account")),
+        expect_navigation=True,
+    )
+    surface.act(Action.SELECT, spec("Product", RoleNameLocator(role="combobox", name="")), "S02")
+
+    outcome = surface.act(
+        Action.CLICK,
+        spec("Submit", RoleNameLocator(role="button", name="Submit")),
+        expect_navigation=True,
+    )
+    assert outcome.ok, "the click itself succeeded"
+    assert not outcome.navigated
+    assert "dialog" in outcome.note and "accept" in outcome.note
