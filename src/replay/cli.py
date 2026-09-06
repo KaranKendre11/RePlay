@@ -43,6 +43,17 @@ def version() -> None:
     typer.echo(__version__)
 
 
+MERIDIAN_OUTCOMES = [
+    ("MEMBER_NOT_FOUND", "MEMBER_NOT_FOUND", "No member on file for the supplied ID."),
+    ("PERMISSION_DENIED", "PERMISSION_DENIED", "Teller authority is insufficient."),
+    (
+        "VALIDATION_REJECTED",
+        "VALIDATION_REJECTED",
+        "The application rejected the submitted values.",
+    ),
+]
+
+
 @app.command()
 def discover(
     goal: Annotated[
@@ -63,6 +74,10 @@ def discover(
         bool, typer.Option("--vision/--no-vision", help="Send screenshots to the model.")
     ] = True,
     evidence_dir: Annotated[Path, typer.Option("--evidence-dir")] = Path("evidence"),
+    save_as: Annotated[
+        str | None,
+        typer.Option("--save-as", help="Synthesise the run into a capability with this name."),
+    ] = None,
 ) -> None:
     """Run the LLM-driven discovery loop against a live application.
 
@@ -103,9 +118,59 @@ def discover(
     if result.outputs:
         typer.echo(f"outputs:    {json.dumps(result.outputs)}")
     typer.echo(f"evidence:   {result.evidence_dir}")
+    for warning in result.warnings:
+        typer.secho(f"warning:    {warning}", fg=typer.colors.YELLOW)
 
     if result.status is not StopReason.GOAL_MET:
         raise typer.Exit(code=1)
+
+    if save_as:
+        _synthesise_and_save(result, save_as)
+
+
+@app.command()
+def synthesize(
+    evidence_dir: Annotated[Path, typer.Argument(help="A discovery run's evidence directory.")],
+    name: Annotated[str, typer.Option("--name", "-n", help="Capability name.")],
+    version: Annotated[
+        str, typer.Option("--version", help="Semver for this capability.")
+    ] = "1.0.0",
+) -> None:
+    """Distil a recorded discovery run into a capability artifact.
+
+    Reads only the run result, never the transcript. Re-runnable against
+    committed evidence, so regenerating the artifact costs nothing.
+    """
+    from replay.agent.loop import DiscoveryResult
+
+    payload = json.loads((evidence_dir / "result.json").read_text())
+    _synthesise_and_save(DiscoveryResult.from_dict(payload), name, version=version)
+
+
+def _synthesise_and_save(result, name: str, *, version: str = "1.0.0") -> None:
+    from replay.artifact import ArtifactStore
+    from replay.synthesis import SynthesisError, declare_outcome
+    from replay.synthesis import synthesize as distil
+
+    outcomes = [declare_outcome(*row) for row in MERIDIAN_OUTCOMES]
+    try:
+        synthesis = distil(
+            result,
+            name=name,
+            version=version,
+            product="MERIDIAN CORE",
+            outcomes=outcomes,
+        )
+    except SynthesisError as exc:
+        typer.secho(f"synthesis failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    for note in synthesis.notes:
+        typer.secho(f"note:       {note}", fg=typer.colors.YELLOW)
+
+    path = ArtifactStore().save(synthesis.artifact, overwrite=True)
+    typer.secho(f"capability: {synthesis.artifact.ref} → {path}", fg=typer.colors.GREEN)
+    typer.echo(f"checkpoint: {synthesis.checkpoint_text!r}")
 
 
 if __name__ == "__main__":

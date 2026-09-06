@@ -81,6 +81,25 @@ class RecordedAction:
     ok: bool = True
     error: str | None = None
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> RecordedAction:
+        target = payload.get("target")
+        return cls(
+            step_id=payload["step_id"],
+            intent=payload["intent"],
+            action=Action(payload["action"]),
+            target=TargetSpec.model_validate(target) if target else None,
+            value=payload.get("value"),
+            parameter_name=payload.get("parameter_name"),
+            output_name=payload.get("output_name"),
+            expect_navigation=bool(payload.get("expect_navigation", False)),
+            accept_dialog=bool(payload.get("accept_dialog", False)),
+            tier_used=payload.get("tier_used"),
+            read_value=payload.get("read_value"),
+            ok=bool(payload.get("ok", True)),
+            error=payload.get("error"),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "step_id": self.step_id,
@@ -101,6 +120,13 @@ class RecordedAction:
 
 @dataclass
 class DiscoveryResult:
+    """The durable record of one run.
+
+    Round-trips through ``result.json`` so a committed run can be re-synthesised
+    later without spending tokens — which is how the artifact in this repo is
+    regenerated and checked in CI.
+    """
+
     run_id: str
     goal: str
     target: str
@@ -114,10 +140,30 @@ class DiscoveryResult:
     reason: str = ""
     evidence_dir: str = ""
     warnings: list[str] = field(default_factory=list)
+    checkpoint_candidates: list[str] = field(default_factory=list)
 
     @property
     def succeeded(self) -> bool:
         return self.status.succeeded
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> DiscoveryResult:
+        return cls(
+            run_id=payload["run_id"],
+            goal=payload["goal"],
+            target=payload["target"],
+            model=payload["model"],
+            status=StopReason(payload["status"]),
+            actions=[RecordedAction.from_dict(a) for a in payload.get("actions", [])],
+            parameters=dict(payload.get("parameters", {})),
+            outputs=dict(payload.get("outputs", {})),
+            summary=payload.get("summary", ""),
+            checkpoint_text=payload.get("checkpoint_text", ""),
+            reason=payload.get("reason", ""),
+            evidence_dir=payload.get("evidence_dir", ""),
+            warnings=list(payload.get("warnings", [])),
+            checkpoint_candidates=list(payload.get("checkpoint_candidates", [])),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +179,7 @@ class DiscoveryResult:
             "outputs": self.outputs,
             "evidence_dir": self.evidence_dir,
             "warnings": self.warnings,
+            "checkpoint_candidates": self.checkpoint_candidates,
             "actions": [a.to_dict() for a in self.actions],
         }
 
@@ -403,6 +450,7 @@ class DiscoveryLoop:
             return
 
         result.warnings.extend(self._checkpoint_warnings(checkpoint, result))
+        result.checkpoint_candidates = self._stable_texts(result)
         result.status = StopReason.GOAL_MET
 
     @staticmethod
@@ -429,6 +477,27 @@ class DiscoveryLoop:
                     f"{name!r}; it asserts this run's data rather than the state reached"
                 )
         return notes
+
+    def _stable_texts(self, result: DiscoveryResult) -> list[str]:
+        """Text on the success screen that does not vary with the inputs.
+
+        Row labels, column headers and control names describe the *state* the
+        flow reached; the values beside them describe one member. Synthesis
+        needs the former when the model hands back the latter.
+        """
+        volatile = {v for v in result.parameters.values() if v}
+        volatile |= {v for v in result.outputs.values() if v}
+
+        texts: list[str] = []
+        inventory = getattr(self.surface, "inventory", None)
+        for candidate in inventory() if inventory else []:
+            for text in (candidate.label, candidate.name):
+                if not text or text in volatile or text in texts:
+                    continue
+                if any(value and value in text for value in volatile):
+                    continue
+                texts.append(text)
+        return texts
 
     def _visible_text(self) -> str:
         reader = getattr(self.surface, "text_of", None)
