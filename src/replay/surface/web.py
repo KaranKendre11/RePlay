@@ -240,12 +240,28 @@ class WebSurface:
             dialogs_seen=list(self._dialogs),
         )
 
+    @staticmethod
+    def _has_body(frame: Frame) -> bool:
+        """Whether this frame has a document body at all.
+
+        A ``<frameset>`` document has none. Asking it for text or an
+        accessibility snapshot means waiting out the full locator timeout every
+        single time — which turned a four-step replay into a 26-second one
+        before this check existed. ``count()`` does not wait.
+        """
+        try:
+            return frame.locator("body").count() > 0
+        except (PlaywrightError, PlaywrightTimeout):
+            return False
+
     def _aria(self, frame: Frame) -> str:
         """Accessibility snapshot of one frame.
 
-        A frameset document has no ``<body>``, so the top frame legitimately
-        yields nothing. Its children carry the content.
+        A frameset document legitimately yields nothing; its children carry the
+        content.
         """
+        if not self._has_body(frame):
+            return ""
         try:
             return frame.locator("body").aria_snapshot(timeout=2_000)
         except (PlaywrightError, PlaywrightTimeout):
@@ -259,7 +275,10 @@ class WebSurface:
 
     def text_of(self, path: list[str] | None = None) -> str:
         try:
-            return self.frame_for(path).locator("body").inner_text(timeout=2_000)
+            frame = self.frame_for(path)
+            if not self._has_body(frame):
+                return ""
+            return frame.locator("body").inner_text(timeout=2_000)
         except (PlaywrightError, PlaywrightTimeout, FrameNotFound):
             return ""
 
@@ -281,6 +300,25 @@ class WebSurface:
             room = MAX_CANDIDATES - len(found)
             found.extend(candidates_from(raw[:room], path, start=len(found)))
         return found
+
+    def html_of(self, path: list[str] | None = None) -> str:
+        """Raw markup, for failure evidence only.
+
+        The one place the DOM is allowed out of this module. Markup is useless
+        for deciding what to do — that is why observations carry an
+        accessibility tree — but it is invaluable for working out afterwards
+        why something broke.
+        """
+        frames = [path] if path is not None else self._frame_paths()
+        chunks: list[str] = []
+        for frame_path in frames:
+            try:
+                frame = self.frame_for(frame_path)
+                label = "/".join(frame_path) or "(main)"
+                chunks.append(f"<!-- frame {label} :: {frame.url} -->\n{frame.content()}")
+            except (PlaywrightError, PlaywrightTimeout, FrameNotFound):
+                continue
+        return "\n\n".join(chunks)
 
     # -- locator ladder ---------------------------------------------------
 

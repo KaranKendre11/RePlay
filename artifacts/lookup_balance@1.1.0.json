@@ -16,7 +16,8 @@
       "description": "Supplied per invocation. Recorded example: '12345'.",
       "required": true,
       "sensitive": false,
-      "example": "12345"
+      "example": "12345",
+      "pattern": "^\\d+$"
     }
   ],
   "outputs": [
@@ -182,12 +183,14 @@
     "requires_approval": false
   },
   "provenance": {
-    "recorded_at": "2026-09-06T09:33:28.835007Z",
+    "recorded_at": "2026-09-06T20:23:35.105990Z",
     "recorded_by": "discovery",
     "model": "gpt-5",
     "run_id": "discovery-20260906T085541Z",
     "transcript_ref": "evidence/discovery-20260906T085541Z/transcript.jsonl",
-    "notes": []
+    "notes": [
+      "pattern '^\\\\d+$' on 'member_id' was inferred from the single recorded example; tighten it if the real format is narrower"
+    ]
   },
   "reliability": {
     "replays": 0,

@@ -128,6 +128,91 @@ def discover(
         _synthesise_and_save(result, save_as)
 
 
+@app.command(name="run")
+def run_capability(
+    name: Annotated[str, typer.Argument(help="Capability name.")],
+    param: Annotated[
+        list[str] | None,
+        typer.Option("--param", "-p", help="Argument as key=value. Repeatable."),
+    ] = None,
+    capability_version: Annotated[
+        str | None, typer.Option("--capability-version", help="Pin a version.")
+    ] = None,
+    target: Annotated[
+        str | None,
+        typer.Option("--target", "-t", help="Run against this origin instead of the recorded one."),
+    ] = None,
+    headed: Annotated[bool, typer.Option("--headed", help="Show the browser window.")] = False,
+    evidence_dir: Annotated[Path, typer.Option("--evidence-dir")] = Path("evidence"),
+) -> None:
+    """Replay a saved capability. No model is involved.
+
+    This is the path an AI agent triggers in production.
+    """
+    from replay.artifact import ArtifactNotFound, ArtifactStore
+    from replay.engine import ReplayExecutor
+    from replay.evidence import EvidenceRecorder, new_run_id
+    from replay.surface import WebSurface
+
+    arguments: dict[str, str] = {}
+    for pair in param or []:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            typer.secho(f"--param expects key=value, got {pair!r}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        arguments[key.strip()] = value
+
+    try:
+        artifact = ArtifactStore().load(name, capability_version)
+    except ArtifactNotFound as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+
+    run_id = new_run_id("replay")
+    typer.secho(f"run {run_id}  capability {artifact.ref}", fg=typer.colors.CYAN)
+
+    with (
+        EvidenceRecorder(run_id, root=evidence_dir) as recorder,
+        WebSurface(headed=headed) as surface,
+    ):
+        result = ReplayExecutor(surface, artifact, recorder=recorder, base_url=target).run(
+            arguments
+        )
+
+    _report(result)
+    raise typer.Exit(code=0 if result.ok else 1)
+
+
+def _report(result) -> None:
+    from replay.engine import ReplayStatus
+
+    colour = {
+        ReplayStatus.SUCCESS: typer.colors.GREEN,
+        ReplayStatus.BUSINESS_OUTCOME: typer.colors.BLUE,
+        ReplayStatus.FAILED: typer.colors.RED,
+    }[result.status]
+    typer.secho(f"\n{result.status.value}", fg=colour, bold=True)
+
+    if result.outputs:
+        typer.echo(f"outputs:   {json.dumps(result.outputs)}")
+    if result.outcome:
+        typer.echo(f"outcome:   {result.outcome.code} — {result.outcome.message}")
+        typer.echo(f"           detected at step {result.outcome.detected_at_step}")
+    if result.failure:
+        typer.echo(f"failed at: {result.failure.step_id} ({result.failure.failure_class.value})")
+        typer.echo(f"expected:  {result.failure.expected}")
+        typer.echo(f"observed:  {result.failure.observed[:200]}")
+
+    typer.echo(f"tiers:     {json.dumps(result.locator_tiers)}")
+    if result.degraded_steps:
+        typer.secho(
+            f"degraded:  {result.degraded_steps} resolved below tier 1",
+            fg=typer.colors.YELLOW,
+        )
+    typer.echo(f"duration:  {result.duration_ms} ms")
+    typer.echo(f"evidence:  {result.evidence_dir}")
+
+
 @app.command()
 def synthesize(
     evidence_dir: Annotated[Path, typer.Argument(help="A discovery run's evidence directory.")],
