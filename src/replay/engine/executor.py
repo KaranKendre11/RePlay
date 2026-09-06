@@ -47,6 +47,14 @@ from replay.engine.result import (
     ReplayStatus,
     StepReport,
 )
+from replay.escalation.control import (
+    EscalationHandler,
+    HumanAction,
+    InterventionRequest,
+    NoEscalation,
+    Resolution,
+)
+from replay.escalation.detect import reason_for, summarise
 from replay.evidence import EvidenceRecorder, new_run_id
 from replay.policy import PolicyRefused, RiskGate
 from replay.surface.base import (
@@ -153,6 +161,7 @@ class ReplayExecutor:
         step_timeout_ms: int = 10_000,
         base_url: str | None = None,
         gate: RiskGate | None = None,
+        escalation: EscalationHandler | None = None,
     ) -> None:
         self.surface = surface
         self.artifact = artifact
@@ -167,6 +176,9 @@ class ReplayExecutor:
         self._captures = 0
         # Default-deny: without an explicit gate, only safe capabilities run.
         self.gate = gate or RiskGate()
+        # Default-nobody: an unattended run fails rather than waiting forever
+        # for an operator who may not exist.
+        self.escalation = escalation or NoEscalation()
 
     # -- entry point ------------------------------------------------------
 
@@ -209,7 +221,10 @@ class ReplayExecutor:
                         cover(step.target)
 
         try:
-            self.gate.check_capability(self.artifact)
+            self.gate.check_capability(
+                self.artifact,
+                escalation_available=not isinstance(self.escalation, NoEscalation),
+            )
         except PolicyRefused as refusal:
             # Refused before a browser opens, so a blocked run costs nothing
             # and — more importantly — leaves the application untouched.
@@ -263,7 +278,7 @@ class ReplayExecutor:
             try:
                 self.gate.check_step(step)
             except PolicyRefused as refusal:
-                result.failure = Failure(
+                failure = Failure(
                     step_id=step.id,
                     failure_class=FailureClass.POLICY_REFUSED,
                     expected=f"policy permitting a {step.risk.value} step",
@@ -271,14 +286,27 @@ class ReplayExecutor:
                     evidence=self._capture(step.id),
                 )
                 self.recorder.event("policy_refused", scope="step", step_id=step.id)
-                return
+                if not self._escalate(result, failure, step):
+                    result.failure = failure
+                    return
+                # The operator performed the blocked step themselves on the
+                # live session, so the automation does not repeat it.
+                continue
 
             report = self._perform(step, bound, index)
             result.steps.append(report)
 
             if not report.ok:
-                result.failure = self._diagnose(step, report)
-                return
+                failure = self._diagnose(step, report)
+                if self._escalate(result, failure, step):
+                    # A person intervened on the live session. Retry the step
+                    # rather than assuming their fix put us where we needed to
+                    # be — the whole point of a checkpoint is not to assume.
+                    report = self._perform(step, bound, index)
+                    result.steps.append(report)
+                if not report.ok:
+                    result.failure = self._diagnose(step, report)
+                    return
 
             outcome = self._detect_outcome(step)
             if outcome is not None:
@@ -441,6 +469,57 @@ class ReplayExecutor:
             for spec in self.artifact.outputs
             if spec.source.step_id in self._reads
         }
+
+    # -- escalation -------------------------------------------------------
+
+    def _escalate(self, result: ReplayResult, failure: Failure, step: Step) -> bool:
+        """Ask a person. Returns whether they handed the session back to us.
+
+        Blocking on purpose. A run that raises a request and carries on has not
+        escalated, it has logged.
+        """
+        reason = reason_for(failure)
+        if reason is None:
+            return False
+
+        request = InterventionRequest(
+            run_id=self.recorder.run_id,
+            capability=self.artifact.ref,
+            reason=reason,
+            summary=summarise(failure, self.artifact.ref),
+            step_id=step.id,
+            step_intent=step.intent,
+            observed=failure.observed,
+            url=self._current_url(),
+            screenshot_ref=failure.evidence.get("screenshot"),
+            allowlist=(
+                self.surface.allowlist.describe()
+                if getattr(self.surface, "allowlist", None) is not None
+                else None
+            ),
+        )
+        self.recorder.event("escalation_raised", **request.to_dict())
+
+        self.surface.release_control()
+        self.recorder.event("control_transferred", to="operator", request_id=request.id)
+        try:
+            resolved = self.escalation.escalate(request)
+        finally:
+            performed = self.surface.reacquire_control() or []
+            self.recorder.event("control_transferred", to="automation", request_id=request.id)
+
+        actions = [
+            HumanAction(kind=a.get("kind", "?"), label=a.get("label", "")) for a in performed
+        ]
+        resolved.human_actions.extend(actions)
+        result.escalation = resolved.to_dict()
+        self.recorder.event("escalation_resolved", **resolved.to_dict())
+
+        return resolved.resolution is Resolution.RESUMED
+
+    def _current_url(self) -> str:
+        observation = self.surface.observe(screenshot=False)
+        return observation.frames[-1].url if observation.frames else observation.url
 
     # -- evidence ---------------------------------------------------------
 

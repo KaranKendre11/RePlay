@@ -1,0 +1,365 @@
+"""Escalation and handoff tests.
+
+The one that carries the weight is
+:func:`test_an_operator_completes_a_blocked_step_and_hands_the_session_back`.
+It runs the irreversible capability, lets the guardrail block it, has a
+stand-in operator perform the blocked step *on the same live browser*, resumes,
+and checks the automation finishes with the right output.
+
+That is the whole control-transfer model exercised end to end: pause, cede,
+act, record, resume. The operator here is scripted rather than human, but
+nothing else is simulated — same browser, same context, same page, same
+server-side session.
+"""
+
+import json
+
+import pytest
+from fastapi.testclient import TestClient
+
+from replay.artifact import ArtifactStore
+from replay.artifact.schema import ApprovalState
+from replay.engine import Failure, FailureClass, ReplayExecutor, ReplayStatus
+from replay.escalation import (
+    ConsoleEscalation,
+    InterventionQueue,
+    InterventionReason,
+    InterventionRequest,
+    NoEscalation,
+    RequestStatus,
+    Resolution,
+    ScriptedOperator,
+    create_console,
+    reason_for,
+)
+from replay.evidence import EvidenceRecorder
+from replay.policy import Allowlist, RiskGate
+from replay.surface import Controller, DialogPolicy, WebSurface
+
+PERMISSIVE = Allowlist.permissive("127.0.0.1:*", "localhost:*")
+
+
+def failure(kind: FailureClass) -> Failure:
+    return Failure(
+        step_id="s7", failure_class=kind, expected="something", observed="something else"
+    )
+
+
+def request(**overrides) -> InterventionRequest:
+    base = {
+        "run_id": "run-1",
+        "capability": "open_subaccount@1.0.0",
+        "reason": InterventionReason.IRREVERSIBLE_STEP,
+        "summary": "blocked on an irreversible step",
+    }
+    return InterventionRequest(**{**base, **overrides})
+
+
+# ---------- who gets paged ----------
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        (FailureClass.POLICY_REFUSED, InterventionReason.IRREVERSIBLE_STEP),
+        (FailureClass.SESSION_LOST, InterventionReason.SESSION_LOST),
+        (FailureClass.CHECKPOINT_UNMET, InterventionReason.CHECKPOINT_UNMET),
+        (FailureClass.APPLICATION_ERROR, InterventionReason.HARD_FAILURE),
+    ],
+)
+def test_failures_a_person_can_fix_are_escalated(kind, expected):
+    assert reason_for(failure(kind)) is expected
+
+
+@pytest.mark.parametrize("kind", [FailureClass.INVALID_INPUT, FailureClass.SURFACE_ERROR])
+def test_failures_a_person_cannot_fix_are_not_escalated(kind):
+    """Paging someone for a caller's typo teaches operators to ignore the queue."""
+    assert reason_for(failure(kind)) is None
+
+
+def test_nothing_escalates_without_a_failure():
+    assert reason_for(None) is None
+
+
+# ---------- the queue ----------
+
+
+def test_a_request_carries_enough_context_to_act_on():
+    """ "Step 7 failed" makes the operator reconstruct the situation themselves."""
+    payload = request(
+        step_id="s7",
+        step_intent="Submit the new sub-account form.",
+        observed="OPEN SUB-ACCOUNT",
+        url="http://127.0.0.1:8080/member/12345/subaccount/new",
+        allowlist={"domains": ["127.0.0.1:8080"]},
+    ).to_dict()
+
+    for field in ("capability", "reason", "step_id", "step_intent", "observed", "url", "allowlist"):
+        assert payload[field], f"{field} is empty"
+
+
+def test_resolving_releases_whoever_is_waiting():
+    queue = InterventionQueue()
+    pending = request()
+    event = queue.submit(pending)
+
+    assert not event.is_set()
+    queue.resolve(pending.id, Resolution.RESUMED, note="done")
+    assert event.is_set()
+
+    stored = queue.get(pending.id)
+    assert stored.status is RequestStatus.RESOLVED
+    assert stored.resolution is Resolution.RESUMED
+    assert stored.resolved_at
+
+
+def test_claiming_marks_a_request_as_taken():
+    """So a second operator can see someone is already on it."""
+    queue = InterventionQueue()
+    pending = request()
+    queue.submit(pending)
+    assert queue.claim(pending.id).status is RequestStatus.IN_PROGRESS
+    assert queue.pending() == [pending]
+
+
+def test_with_nobody_available_the_run_is_abandoned_not_hung():
+    """A system that waits forever for an operator who does not exist is worse
+    than one that fails."""
+    resolved = NoEscalation().escalate(request())
+    assert resolved.resolution is Resolution.ABORTED
+    assert "no escalation handler" in resolved.operator_note
+
+
+# ---------- the console ----------
+
+
+@pytest.fixture
+def console():
+    queue = InterventionQueue()
+    return queue, TestClient(create_console(queue))
+
+
+def test_the_console_lists_pending_work(console):
+    queue, client = console
+    queue.submit(request(step_intent="Submit the new sub-account form."))
+
+    page = client.get("/").text
+    assert "IRREVERSIBLE STEP" in page
+    assert "Submit the new sub-account form." in page
+    assert "Hand control back" in page
+
+
+def test_an_empty_console_says_so(console):
+    _, client = console
+    assert "running unattended" in client.get("/").text
+
+
+def test_resuming_through_the_console_unblocks_the_run(console):
+    """The API a real operator's click goes through."""
+    queue, client = console
+    pending = request()
+    event = queue.submit(pending)
+
+    response = client.post(f"/interventions/{pending.id}/resume")
+    assert response.status_code == 200
+    assert response.json()["resolution"] == "resumed"
+    assert event.wait(timeout=1)
+
+
+def test_aborting_through_the_console_ends_the_run(console):
+    queue, client = console
+    pending = request()
+    queue.submit(pending)
+    assert client.post(f"/interventions/{pending.id}/abort").json()["resolution"] == "aborted"
+
+
+def test_an_unknown_request_is_a_404(console):
+    _, client = console
+    assert client.post("/interventions/nope/resume").status_code == 404
+
+
+def test_the_console_exposes_json_for_anything_that_is_not_a_browser(console):
+    queue, client = console
+    queue.submit(request())
+    assert len(client.get("/api/interventions").json()) == 1
+
+
+def test_console_escalation_waits_and_then_returns_the_decision():
+    """The blocking half, driven from the console's own endpoint."""
+    import threading
+
+    queue = InterventionQueue()
+    handler = ConsoleEscalation(queue, timeout_s=5)
+    client = TestClient(create_console(queue))
+    pending = request()
+
+    result: list = []
+    waiter = threading.Thread(target=lambda: result.append(handler.escalate(pending)))
+    waiter.start()
+
+    for _ in range(50):
+        if queue.get(pending.id):
+            break
+        threading.Event().wait(0.05)
+    client.post(f"/interventions/{pending.id}/resume")
+    waiter.join(timeout=5)
+
+    assert result and result[0].resolution is Resolution.RESUMED
+
+
+def test_console_escalation_gives_up_rather_than_holding_a_browser_forever():
+    handler = ConsoleEscalation(InterventionQueue(), timeout_s=0.2)
+    assert handler.escalate(request()).resolution is Resolution.ABORTED
+
+
+# ---------- the real handoff ----------
+
+
+@pytest.fixture
+def write_capability():
+    artifact = ArtifactStore("artifacts").load("open_subaccount")
+    approved = artifact.model_copy(deep=True)
+    approved.reliability.approval = ApprovalState.APPROVED
+    return approved
+
+
+def test_an_operator_completes_a_blocked_step_and_hands_the_session_back(
+    meridian_server, write_capability, tmp_path
+):
+    """The whole control-transfer model, end to end.
+
+    The guardrail blocks the irreversible step; a person performs it on the
+    same live browser; automation resumes and finishes. Nothing about the
+    session is recreated — same context, same cookies, same page.
+    """
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-handoff", root=tmp_path) as recorder,
+    ):
+
+        def operator_submits(_request):
+            # Exactly what a human does in the headed window: answer the
+            # confirmation, then press the button.
+            assert surface.controller is Controller.OPERATOR, "automation must have let go"
+            surface.answer_next_dialog(DialogPolicy.ACCEPT)
+            frame = surface.frame_for(["workframe"])
+            frame.get_by_role("button", name="Submit").click()
+            frame.wait_for_load_state("load")
+
+        operator = ScriptedOperator(operator_submits)
+        result = ReplayExecutor(
+            surface,
+            write_capability,
+            recorder=recorder,
+            base_url=meridian_server,
+            gate=RiskGate(allow_risky=True),  # risky yes, irreversible no
+            escalation=operator,
+        ).run({"member_id": "12345", "product_code": "S02", "opening_deposit": "50.00"})
+
+        assert surface.controller is Controller.AUTOMATION, "control came back"
+
+    assert operator.seen, "a request was raised"
+    assert operator.seen[0].reason is InterventionReason.IRREVERSIBLE_STEP
+    assert result.status is ReplayStatus.SUCCESS
+    assert result.outputs["new_account_no"] == "12345046"
+    assert result.escalation["resolution"] == "resumed"
+
+
+def test_what_the_operator_did_is_recorded(meridian_server, write_capability, tmp_path):
+    """Asking them to write it down is the version that stops happening."""
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-trace", root=tmp_path) as recorder,
+    ):
+
+        def operator_submits(_request):
+            surface.answer_next_dialog(DialogPolicy.ACCEPT)
+            frame = surface.frame_for(["workframe"])
+            frame.get_by_role("button", name="Submit").click()
+            frame.wait_for_load_state("load")
+
+        result = ReplayExecutor(
+            surface,
+            write_capability,
+            recorder=recorder,
+            base_url=meridian_server,
+            gate=RiskGate(allow_risky=True),
+            escalation=ScriptedOperator(operator_submits),
+        ).run({"member_id": "12345", "product_code": "S02", "opening_deposit": "50.00"})
+
+    performed = result.escalation["human_actions"]
+    assert performed, "the operator's clicks were captured, not self-reported"
+    assert any(a["kind"] == "click" for a in performed)
+    assert any("Submit" in a["label"] for a in performed)
+
+
+def test_an_operator_who_abandons_the_run_ends_it(meridian_server, write_capability, tmp_path):
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-abort", root=tmp_path) as recorder,
+    ):
+        result = ReplayExecutor(
+            surface,
+            write_capability,
+            recorder=recorder,
+            base_url=meridian_server,
+            gate=RiskGate(allow_risky=True),
+            escalation=ScriptedOperator(resolution=Resolution.ABORTED),
+        ).run({"member_id": "12345", "product_code": "S02", "opening_deposit": "50.00"})
+
+    assert result.status is ReplayStatus.FAILED
+    assert result.failure.failure_class is FailureClass.POLICY_REFUSED
+    assert result.escalation["resolution"] == "aborted"
+
+
+def test_every_control_transfer_is_logged(meridian_server, write_capability, tmp_path):
+    """ "Who is driving" must be answerable after the fact, not only during."""
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-log", root=tmp_path) as recorder,
+    ):
+        ReplayExecutor(
+            surface,
+            write_capability,
+            recorder=recorder,
+            base_url=meridian_server,
+            gate=RiskGate(allow_risky=True),
+            escalation=ScriptedOperator(resolution=Resolution.ABORTED),
+        ).run({"member_id": "12345", "product_code": "S02", "opening_deposit": "50.00"})
+
+        log = (recorder.dir / "run.jsonl").read_text().splitlines()
+        events = [json.loads(line) for line in log]
+
+    kinds = [e["kind"] for e in events]
+    assert "escalation_raised" in kinds
+    assert kinds.count("control_transferred") == 2, "released and reacquired"
+    assert "escalation_resolved" in kinds
+
+    transfers = [e["to"] for e in events if e["kind"] == "control_transferred"]
+    assert transfers == ["operator", "automation"]
+
+
+def test_an_unattended_run_is_refused_at_the_door(meridian_server, write_capability, tmp_path):
+    """No operator configured means no operator exists.
+
+    With nobody to ask, an irreversible capability is simply unrunnable, so it
+    is refused before a browser opens rather than escalated to no one. The
+    application is never touched.
+    """
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-none", root=tmp_path) as recorder,
+    ):
+        result = ReplayExecutor(
+            surface,
+            write_capability,
+            recorder=recorder,
+            base_url=meridian_server,
+            gate=RiskGate(allow_risky=True),
+        ).run({"member_id": "12345", "product_code": "S02", "opening_deposit": "50.00"})
+
+    assert result.status is ReplayStatus.FAILED
+    assert result.failure.failure_class is FailureClass.POLICY_REFUSED
+    assert "irreversible" in result.failure.observed
+    assert result.steps == [], "nothing was executed"
+    assert result.escalation is None, "nobody was asked, so nothing was escalated"

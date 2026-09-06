@@ -65,6 +65,7 @@ from replay.artifact.locators import (
     SelectorLocator,
 )
 from replay.artifact.schema import Action, TargetSpec
+from replay.escalation.trace import BINDING, LISTENER_JS
 from replay.policy.allowlist import Allowlist, PolicyRefused
 from replay.surface.base import (
     ActionOutcome,
@@ -132,6 +133,8 @@ class WebSurface:
         # test. Production callers pass one; the CLI always does.
         self.allowlist = allowlist
         self._masked: list[TargetSpec] = []
+        self._human_actions: list[dict[str, str]] = []
+        self._binding_installed = False
 
         self.page.on("dialog", self._handle_dialog)
         self.page.on("response", self._note_response)
@@ -160,15 +163,55 @@ class WebSurface:
         """Hand the live session to a human.
 
         Nothing is torn down. Same browser, same context, same cookies, same
-        page — which is what makes "the human takes over the *same* session"
-        a structural fact rather than a claim (M9).
+        page — which is what makes "the human takes over the *same* session" a
+        structural fact rather than a claim.
+
+        A capture-phase listener is installed in every frame so what the
+        operator does is recorded without anyone having to write it down.
         """
         self._controller = Controller.OPERATOR
+        self._human_actions = []
+        self._install_recorder()
         with contextlib.suppress(PlaywrightError):
             self.page.bring_to_front()
 
-    def reacquire_control(self) -> None:
+    def reacquire_control(self) -> list[dict[str, str]]:
+        """Take the session back, and return what the operator did with it."""
         self._controller = Controller.AUTOMATION
+        recorded = list(self._human_actions)
+        self._human_actions = []
+        return recorded
+
+    @property
+    def human_actions(self) -> list[dict[str, str]]:
+        return list(self._human_actions)
+
+    def answer_next_dialog(self, policy: DialogPolicy) -> None:
+        """Decide how the next native dialog is answered.
+
+        Public because the operator needs it during a handoff: in a headed
+        browser they click OK themselves, and a test standing in for them needs
+        the same lever without reaching into private state.
+        """
+        self._pending_dialog = policy
+
+    def _install_recorder(self) -> None:
+        """Wire the page back to us, then listen in every frame.
+
+        The binding is installed once per page — Playwright refuses a second —
+        while the listeners are re-installed on each handoff, because a frame
+        that navigated in between has a fresh document.
+        """
+        if not self._binding_installed:
+            with contextlib.suppress(PlaywrightError):
+                self.page.expose_binding(
+                    BINDING, lambda _source, payload: self._human_actions.append(payload)
+                )
+                self._binding_installed = True
+
+        for path in self._frame_paths():
+            with contextlib.suppress(PlaywrightError, PlaywrightTimeout, FrameNotFound):
+                self.frame_for(path).evaluate(LISTENER_JS, BINDING)
 
     def _require_control(self) -> None:
         if self._controller is not Controller.AUTOMATION:
