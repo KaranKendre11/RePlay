@@ -161,6 +161,11 @@ def run_capability(
             help="Permit irreversible steps. Blocked by default; prefer human escalation.",
         ),
     ] = False,
+    escalate: Annotated[
+        bool,
+        typer.Option("--escalate", help="Open the operator console and route blocks to a human."),
+    ] = False,
+    console_port: Annotated[int, typer.Option("--console-port")] = 8765,
 ) -> None:
     """Replay a saved capability. No model is involved.
 
@@ -168,6 +173,7 @@ def run_capability(
     """
     from replay.artifact import ArtifactNotFound, ArtifactStore
     from replay.engine import ReplayExecutor
+    from replay.escalation import ConsoleEscalation, InterventionQueue, serve_console
     from replay.evidence import EvidenceRecorder, new_run_id
     from replay.policy import RiskGate
     from replay.surface import WebSurface
@@ -189,15 +195,29 @@ def run_capability(
     allowlist = _load_allowlist(policy_file)
     gate = RiskGate(allow_risky=allow_risky, allow_irreversible=allow_irreversible)
 
+    handler = None
+    if escalate:
+        queue = InterventionQueue()
+        serve_console(queue, port=console_port)
+        handler = ConsoleEscalation(queue)
+        typer.secho(f"operator console: http://127.0.0.1:{console_port}", fg=typer.colors.MAGENTA)
+
     run_id = new_run_id("replay")
     typer.secho(f"run {run_id}  capability {artifact.ref}", fg=typer.colors.CYAN)
 
     with (
         EvidenceRecorder(run_id, root=evidence_dir) as recorder,
-        WebSurface(headed=headed, allowlist=allowlist) as surface,
+        # Headed whenever a human might be asked to take over: they act in the
+        # real window, on the same session.
+        WebSurface(headed=headed or escalate, allowlist=allowlist) as surface,
     ):
         result = ReplayExecutor(
-            surface, artifact, recorder=recorder, base_url=target, gate=gate
+            surface,
+            artifact,
+            recorder=recorder,
+            base_url=target,
+            gate=gate,
+            escalation=handler,
         ).run(arguments)
 
     _report(result)
@@ -248,6 +268,15 @@ def _report(result) -> None:
             f"degraded:  {result.degraded_steps} resolved below tier 1",
             fg=typer.colors.YELLOW,
         )
+    if result.escalation:
+        escalation = result.escalation
+        typer.secho(
+            f"escalated: {escalation['reason']} → {escalation['resolution']}",
+            fg=typer.colors.MAGENTA,
+        )
+        for action in escalation["human_actions"]:
+            typer.echo(f"  operator: {action['kind']} {action['label']}")
+
     typer.echo(f"duration:  {result.duration_ms} ms")
     typer.echo(f"evidence:  {result.evidence_dir}")
 

@@ -50,17 +50,29 @@ class RiskGate:
             return RiskClass.IRREVERSIBLE
         return RiskClass.RISKY if self.allow_risky else RiskClass.SAFE
 
-    def check_capability(self, artifact: CapabilityArtifact) -> None:
+    def check_capability(
+        self, artifact: CapabilityArtifact, *, escalation_available: bool = False
+    ) -> None:
         """Refuse before opening a browser if the capability cannot run at all.
 
         Failing here rather than at step seven means a blocked run costs
         nothing and, more importantly, leaves the application untouched.
+
+        ``escalation_available`` changes what "at all" means. An irreversible
+        capability with nobody to ask is unrunnable; the same capability with an
+        operator reachable is runnable *by a person*, so the refusal belongs at
+        the step where it happens rather than at the door. Blocking here anyway
+        would make the guardrail and the handoff contradict each other.
         """
         # Ordered by how fundamental the refusal is. Being unapproved is a
         # process gap someone can close today; containing an irreversible step
         # is a property of the capability itself, and saying so first gives the
         # clearer answer to "why did this not run".
-        if at_least(artifact.max_step_risk, RiskClass.IRREVERSIBLE) and not self.allow_irreversible:
+        if (
+            at_least(artifact.max_step_risk, RiskClass.IRREVERSIBLE)
+            and not self.allow_irreversible
+            and not escalation_available
+        ):
             raise PolicyRefused(
                 f"capability {artifact.ref}",
                 "it contains an irreversible step; irreversible actions are blocked by "
