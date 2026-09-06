@@ -6,45 +6,22 @@ native confirm(). This module answers that, and in doing so pins down the
 three constraints the M2 surface layer has to respect.
 """
 
-import socket
-import threading
-
 import pytest
-from werkzeug.serving import make_server
-
-from targets.meridian.app import create_app
 
 #: Tier 3 of the locator ladder. The only thing tying the visible label to the
 #: field is that they are adjacent cells, so this is what actually works here.
 LABEL_ADJACENT = "xpath=//td[normalize-space(text())='{}']/following-sibling::td[1]//input"
 
 
-@pytest.fixture(scope="module")
-def live_server():
-    """Serve the app on an ephemeral port for the duration of the module."""
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-
-    server = make_server("127.0.0.1", port, create_app(), threaded=True)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.shutdown()
-        thread.join(timeout=5)
-
-
 @pytest.fixture
-def page(live_server):
+def page(meridian_server):
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
             pg = browser.new_page()
-            pg.goto(live_server, wait_until="networkidle")
+            pg.goto(meridian_server, wait_until="networkidle")
             yield pg
         finally:
             browser.close()
