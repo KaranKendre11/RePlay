@@ -1,0 +1,358 @@
+{
+  "schema_version": "1.0",
+  "name": "open_subaccount",
+  "version": "1.0.0",
+  "title": "Open a new sub-account for member 12345 using product code S02 with an opening deposit of 50.00, and reach the confirmation screen showing the new account number",
+  "description": "Opened a new sub-account for member 12345 using product code S02 with an opening deposit of 50.00. Reached the confirmation screen and captured the new account number: 12345046.",
+  "app": {
+    "product": "MERIDIAN CORE",
+    "surface": "legacy_web",
+    "entry_url_pattern": "http://127.0.0.1:8080/"
+  },
+  "inputs": [
+    {
+      "name": "member_id",
+      "type": "string",
+      "description": "Supplied per invocation. Recorded example: '12345'.",
+      "required": true,
+      "sensitive": false,
+      "example": "12345",
+      "pattern": "^\\d+$"
+    },
+    {
+      "name": "product_code",
+      "type": "string",
+      "description": "Supplied per invocation. Recorded example: 'S02'.",
+      "required": true,
+      "sensitive": false,
+      "example": "S02"
+    },
+    {
+      "name": "opening_deposit",
+      "type": "money",
+      "description": "Supplied per invocation. Recorded example: '50.00'.",
+      "required": true,
+      "sensitive": false,
+      "example": "50.00"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "new_account_no",
+      "type": "string",
+      "description": "Read from 'New Account No value' on the final screen.",
+      "source": {
+        "step_id": "s8",
+        "extraction": "text"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "intent": "Open the target application.",
+      "action": "navigate",
+      "value": "http://127.0.0.1:8080/",
+      "waits": [],
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s2",
+      "intent": "Enter the member id field.",
+      "action": "type",
+      "target": {
+        "description": "Member ID field",
+        "rationale": "This textbox exposed no accessible name in the tree, so role+name cannot lead. The visible label 'Member ID' is associated only by layout adjacency, which is what resolves it here. Ladder recorded as 3:label_adjacent, 5:selector.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "label_adjacent",
+            "label": "Member ID",
+            "relation": "right",
+            "control": "input"
+          },
+          {
+            "kind": "selector",
+            "engine": "css",
+            "expression": "input[name='f7']"
+          }
+        ]
+      },
+      "value": {
+        "param": "member_id"
+      },
+      "waits": [],
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s3",
+      "intent": "Click Search.",
+      "action": "click",
+      "target": {
+        "description": "Search",
+        "rationale": "Accessible name 'Search' was present on this button, so role+name leads the ladder and stays portable to a desktop surface. Ladder recorded as 1:role_name.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "role_name",
+            "role": "button",
+            "name": "Search",
+            "exact": true
+          }
+        ]
+      },
+      "waits": [
+        {
+          "kind": "navigation",
+          "timeout_ms": 15000
+        }
+      ],
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s4",
+      "intent": "Click Open Sub-Account.",
+      "action": "click",
+      "target": {
+        "description": "Open Sub-Account",
+        "rationale": "Accessible name 'Open Sub-Account' was present on this link, so role+name leads the ladder and stays portable to a desktop surface. Ladder recorded as 1:role_name.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "role_name",
+            "role": "link",
+            "name": "Open Sub-Account",
+            "exact": true
+          }
+        ]
+      },
+      "waits": [
+        {
+          "kind": "navigation",
+          "timeout_ms": 15000
+        }
+      ],
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s5",
+      "intent": "Choose 'S02' for product code field.",
+      "action": "select",
+      "target": {
+        "description": "Product Code field",
+        "rationale": "This combobox exposed no accessible name in the tree, so role+name cannot lead. The visible label 'Product Code' is associated only by layout adjacency, which is what resolves it here. Ladder recorded as 3:label_adjacent, 5:selector.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "label_adjacent",
+            "label": "Product Code",
+            "relation": "right",
+            "control": "select"
+          },
+          {
+            "kind": "selector",
+            "engine": "css",
+            "expression": "select[name='f12']"
+          }
+        ]
+      },
+      "value": {
+        "param": "product_code"
+      },
+      "waits": [],
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s6",
+      "intent": "Enter the opening deposit field.",
+      "action": "type",
+      "target": {
+        "description": "Opening Deposit field",
+        "rationale": "This textbox exposed no accessible name in the tree, so role+name cannot lead. The visible label 'Opening Deposit' is associated only by layout adjacency, which is what resolves it here. Ladder recorded as 3:label_adjacent, 5:selector.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "label_adjacent",
+            "label": "Opening Deposit",
+            "relation": "right",
+            "control": "input"
+          },
+          {
+            "kind": "selector",
+            "engine": "css",
+            "expression": "input[name='f13']"
+          }
+        ]
+      },
+      "value": {
+        "param": "opening_deposit"
+      },
+      "waits": [],
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s7",
+      "intent": "Click Submit.",
+      "action": "click",
+      "target": {
+        "description": "Submit",
+        "rationale": "Accessible name 'Submit' was present on this button, so role+name leads the ladder and stays portable to a desktop surface. Ladder recorded as 1:role_name.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "role_name",
+            "role": "button",
+            "name": "Submit",
+            "exact": true
+          }
+        ]
+      },
+      "waits": [
+        {
+          "kind": "navigation",
+          "timeout_ms": 15000
+        }
+      ],
+      "checkpoint": {
+        "kind": "text_present",
+        "text": "Transaction posted. Retain reference number for audit."
+      },
+      "on_error": [
+        {
+          "when": {
+            "kind": "text_present",
+            "text": "SYSTEM NOTICE"
+          },
+          "do": "click",
+          "target": {
+            "description": "Acknowledge and Continue link on the system notice interstitial",
+            "rationale": "Links carry an accessible name from their text, so role+name resolves this at tier 1 — the interstitial is one of the few controls on this application that does.",
+            "frame_path": [
+              "workframe"
+            ],
+            "strategies": [
+              {
+                "kind": "role_name",
+                "role": "link",
+                "name": "Acknowledge and Continue",
+                "exact": true
+              }
+            ]
+          },
+          "max_attempts": 2
+        }
+      ],
+      "risk": "irreversible"
+    },
+    {
+      "id": "s8",
+      "intent": "Read new account no value as output 'new_account_no'.",
+      "action": "read",
+      "target": {
+        "description": "New Account No value",
+        "rationale": "This cell exposed no accessible name in the tree, so role+name cannot lead. The visible label 'New Account No' is associated only by layout adjacency, which is what resolves it here. Ladder recorded as 4:anchored_text, 5:selector.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "anchored_text",
+            "anchor": "New Account No",
+            "relation": "same_row",
+            "offset": 1,
+            "nth": 0
+          },
+          {
+            "kind": "selector",
+            "engine": "xpath",
+            "expression": "//tr[td[normalize-space()=\"New Account No\"]]/td[2]"
+          }
+        ]
+      },
+      "waits": [],
+      "on_error": [],
+      "risk": "safe"
+    }
+  ],
+  "outcomes": [
+    {
+      "code": "MEMBER_NOT_FOUND",
+      "detect": {
+        "kind": "all_of",
+        "conditions": [
+          {
+            "kind": "text_present",
+            "text": "MEMBER_NOT_FOUND"
+          }
+        ]
+      },
+      "message": "No member on file for the supplied ID.",
+      "terminal": true
+    },
+    {
+      "code": "PERMISSION_DENIED",
+      "detect": {
+        "kind": "all_of",
+        "conditions": [
+          {
+            "kind": "text_present",
+            "text": "PERMISSION_DENIED"
+          }
+        ]
+      },
+      "message": "Teller authority is insufficient.",
+      "terminal": true
+    },
+    {
+      "code": "VALIDATION_REJECTED",
+      "detect": {
+        "kind": "all_of",
+        "conditions": [
+          {
+            "kind": "text_present",
+            "text": "VALIDATION_REJECTED"
+          }
+        ]
+      },
+      "message": "The application rejected the submitted values.",
+      "terminal": true
+    }
+  ],
+  "policy": {
+    "max_risk": "irreversible",
+    "requires_approval": true
+  },
+  "provenance": {
+    "recorded_at": "2026-09-06T21:13:32.771129Z",
+    "recorded_by": "discovery",
+    "model": "gpt-5",
+    "run_id": "discovery-20260906T211130Z",
+    "transcript_ref": "evidence/discovery-20260906T211130Z/transcript.jsonl",
+    "notes": [
+      "pattern '^\\\\d+$' on 'member_id' was inferred from the single recorded example; tighten it if the real format is narrower"
+    ]
+  },
+  "reliability": {
+    "replays": 0,
+    "successes": 0,
+    "approval": "draft"
+  }
+}

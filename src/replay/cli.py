@@ -53,6 +53,10 @@ MERIDIAN_OUTCOMES = [
     ),
 ]
 
+#: Recoverable conditions this application is known to produce. Like outcomes,
+#: declared at review rather than inferred: a happy-path run never met one.
+MERIDIAN_RECOVERIES = [("SYSTEM NOTICE", "Acknowledge and Continue")]
+
 
 @app.command()
 def discover(
@@ -234,17 +238,17 @@ def synthesize(
 
 def _synthesise_and_save(result, name: str, *, version: str = "1.0.0") -> None:
     from replay.artifact import ArtifactStore
-    from replay.synthesis import SynthesisError, declare_outcome
+    from replay.synthesis import SynthesisError, declare_interstitial, declare_outcome
     from replay.synthesis import synthesize as distil
 
-    outcomes = [declare_outcome(*row) for row in MERIDIAN_OUTCOMES]
     try:
         synthesis = distil(
             result,
             name=name,
             version=version,
             product="MERIDIAN CORE",
-            outcomes=outcomes,
+            outcomes=[declare_outcome(*row) for row in MERIDIAN_OUTCOMES],
+            recoveries=[declare_interstitial(*row) for row in MERIDIAN_RECOVERIES],
         )
     except SynthesisError as exc:
         typer.secho(f"synthesis failed: {exc}", fg=typer.colors.RED, err=True)

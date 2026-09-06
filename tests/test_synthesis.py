@@ -22,11 +22,26 @@ from replay.synthesis import (
     declare_outcome,
     infer_pattern,
     infer_type,
+    prune_ineffective,
     slug,
     synthesize,
 )
 
-REAL_RUN = sorted(Path("evidence").glob("discovery-*"))[-1]
+
+def find_run(goal_fragment: str) -> Path:
+    """Locate a committed discovery run by what it was asked to do.
+
+    Selecting the newest directory breaks the moment a second capability is
+    recorded, which is exactly what happened.
+    """
+    for directory in sorted(Path("evidence").glob("discovery-*")):
+        payload = json.loads((directory / "result.json").read_text())
+        if goal_fragment.lower() in payload["goal"].lower():
+            return directory
+    raise AssertionError(f"no committed discovery run matching {goal_fragment!r}")
+
+
+REAL_RUN = find_run("savings balance")
 RATIONALE = "Recorded from the live surface; documents why this ladder was chosen."
 
 
@@ -316,3 +331,88 @@ def test_provenance_records_when_and_by_what():
     artifact = synthesize(run(), name="lookup_balance").artifact
     assert artifact.provenance.recorded_by == "discovery"
     assert artifact.provenance.recorded_at <= datetime.now(UTC)
+
+
+# ---------- pruning ----------
+
+
+def test_a_click_that_achieved_nothing_is_dropped():
+    """From the real write-flow run.
+
+    The model clicked Submit, the confirmation dialog was dismissed by default
+    so nothing moved, then it clicked Submit again while accepting the dialog.
+    Both clicks succeeded; only the second did anything. The artifact should
+    describe the flow, not the discovery of the flow.
+    """
+    submit = target("Submit", RoleNameLocator(role="button", name="Submit"))
+    actions = [
+        RecordedAction(step_id="s1", intent="Open.", action=Action.NAVIGATE, value="http://x/"),
+        RecordedAction(
+            step_id="s2",
+            intent="Submit.",
+            action=Action.CLICK,
+            target=submit,
+            expect_navigation=True,
+            navigated=False,
+            note="the click raised a dialog which was dismissed",
+        ),
+        RecordedAction(
+            step_id="s3",
+            intent="Submit.",
+            action=Action.CLICK,
+            target=submit,
+            expect_navigation=True,
+            navigated=True,
+            accept_dialog=True,
+        ),
+    ]
+    kept = prune_ineffective(actions)
+    assert [a.step_id for a in kept] == ["s1", "s2"], "renumbered contiguously"
+    assert kept[1].accept_dialog, "the surviving click is the one that worked"
+
+
+def test_a_click_that_navigated_is_never_dropped():
+    search = target("Search", RoleNameLocator(role="button", name="Search"))
+    actions = [
+        RecordedAction(
+            step_id="s1",
+            intent="Search.",
+            action=Action.CLICK,
+            target=search,
+            expect_navigation=True,
+            navigated=True,
+        ),
+        RecordedAction(
+            step_id="s2",
+            intent="Search again.",
+            action=Action.CLICK,
+            target=search,
+            expect_navigation=True,
+            navigated=True,
+        ),
+    ]
+    assert len(prune_ineffective(actions)) == 2
+
+
+def test_a_click_that_was_never_expected_to_navigate_is_kept():
+    """Expanding a panel navigates nothing and is still doing something."""
+    toggle = target("Details", RoleNameLocator(role="button", name="Details"))
+    actions = [
+        RecordedAction(
+            step_id="s1",
+            intent="Expand.",
+            action=Action.CLICK,
+            target=toggle,
+            expect_navigation=False,
+            navigated=False,
+        ),
+        RecordedAction(
+            step_id="s2",
+            intent="Expand.",
+            action=Action.CLICK,
+            target=toggle,
+            expect_navigation=False,
+            navigated=False,
+        ),
+    ]
+    assert len(prune_ineffective(actions)) == 2

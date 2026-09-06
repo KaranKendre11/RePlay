@@ -101,7 +101,31 @@
         "kind": "text_present",
         "text": "Open Sub-Account"
       },
-      "on_error": [],
+      "on_error": [
+        {
+          "when": {
+            "kind": "text_present",
+            "text": "SYSTEM NOTICE"
+          },
+          "do": "click",
+          "target": {
+            "description": "Acknowledge and Continue link on the system notice interstitial",
+            "rationale": "Links carry an accessible name from their text, so role+name resolves this at tier 1 — the interstitial is one of the few controls on this application that does.",
+            "frame_path": [
+              "workframe"
+            ],
+            "strategies": [
+              {
+                "kind": "role_name",
+                "role": "link",
+                "name": "Acknowledge and Continue",
+                "exact": true
+              }
+            ]
+          },
+          "max_attempts": 2
+        }
+      ],
       "risk": "safe"
     },
     {
@@ -183,7 +207,7 @@
     "requires_approval": false
   },
   "provenance": {
-    "recorded_at": "2026-09-06T20:23:35.105990Z",
+    "recorded_at": "2026-09-06T20:27:47.936099Z",
     "recorded_by": "discovery",
     "model": "gpt-5",
     "run_id": "discovery-20260906T085541Z",

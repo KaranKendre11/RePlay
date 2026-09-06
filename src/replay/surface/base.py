@@ -175,6 +175,13 @@ class ActionOutcome:
     navigated: bool = False
     dialogs: list[str] = field(default_factory=list)
     error: str | None = None
+    note: str | None = None
+    """Something that happened which is not an error but changes what to do next.
+
+    A click that was expected to navigate and did not is the motivating case:
+    the click worked, so it is not a failure, but whoever is deciding the next
+    step badly needs to know — especially if a confirmation dialog was dismissed
+    on the way through."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -185,6 +192,7 @@ class ActionOutcome:
             "navigated": self.navigated,
             "dialogs": list(self.dialogs),
             "error": self.error,
+            "note": self.note,
         }
 
 

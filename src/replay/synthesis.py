@@ -30,12 +30,13 @@ zero times has earned nothing.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from replay.agent.loop import DiscoveryResult, RecordedAction, StopReason
 from replay.artifact.conditions import AllOf, Condition, TextPresent
+from replay.artifact.locators import RoleNameLocator
 from replay.artifact.schema import (
     Action,
     AppRef,
@@ -49,10 +50,13 @@ from replay.artifact.schema import (
     ParamSpec,
     PolicyBlock,
     Provenance,
+    RecoveryAction,
+    RecoveryRule,
     Reliability,
     RiskClass,
     Step,
     SurfaceKind,
+    TargetSpec,
     ValueType,
     WaitKind,
     WaitSpec,
@@ -184,6 +188,7 @@ def synthesize(
     product_version: str | None = None,
     surface: SurfaceKind = SurfaceKind.LEGACY_WEB,
     outcomes: list[BusinessOutcome] | None = None,
+    recoveries: list[RecoveryRule] | None = None,
 ) -> Synthesis:
     """Distil a successful run into a capability."""
     if result.status is not StopReason.GOAL_MET:
@@ -192,7 +197,7 @@ def synthesize(
             "only a completed run describes a capability"
         )
 
-    successful = [a for a in result.actions if a.ok]
+    successful = prune_ineffective([a for a in result.actions if a.ok])
     if not successful:
         raise SynthesisError("the run recorded no successful actions")
 
@@ -204,7 +209,7 @@ def synthesize(
         for spec in inputs
         if spec.pattern
     )
-    steps, outputs = _steps_and_outputs(successful, result, checkpoint)
+    steps, outputs = _steps_and_outputs(successful, result, checkpoint, recoveries or [])
 
     max_risk = max(
         (s.risk for s in steps),
@@ -243,6 +248,44 @@ def synthesize(
     return Synthesis(artifact=artifact, checkpoint_text=checkpoint_text, notes=notes)
 
 
+def prune_ineffective(actions: list[RecordedAction]) -> list[RecordedAction]:
+    """Drop actions the run performed that demonstrably achieved nothing.
+
+    The motivating case is real: on the write flow the model clicked Submit,
+    the confirmation dialog was dismissed by default so nothing moved, and it
+    then clicked Submit again while accepting the dialog. Both clicks succeeded;
+    only the second one did anything.
+
+    The artifact should describe the flow, not the discovery of the flow. A
+    replay of the unpruned version would click Submit twice, and a reviewer
+    would reasonably wonder why.
+
+    The rule is narrow on purpose: only a click that expected to navigate, did
+    not, and is superseded by a later action on the same control. A click that
+    merely expands a panel navigates nothing and is kept.
+    """
+    # One entry per action, so positions line up with the enumerate below.
+    # Filtering here instead silently shifts every index.
+    descriptions = [a.target.description if a.target else None for a in actions]
+    kept: list[RecordedAction] = []
+    for position, action in enumerate(actions):
+        superseded = (
+            action.action is Action.CLICK
+            and action.expect_navigation
+            and not action.navigated
+            and action.target is not None
+            and action.target.description in descriptions[position + 1 :]
+        )
+        if not superseded:
+            kept.append(action)
+    return _renumber(kept)
+
+
+def _renumber(actions: list[RecordedAction]) -> list[RecordedAction]:
+    """Give the kept steps contiguous ids, so the artifact reads as a procedure."""
+    return [replace(action, step_id=f"s{index}") for index, action in enumerate(actions, start=1)]
+
+
 def _inputs(result: DiscoveryResult) -> list[ParamSpec]:
     return [
         ParamSpec(
@@ -261,6 +304,7 @@ def _steps_and_outputs(
     actions: list[RecordedAction],
     result: DiscoveryResult,
     checkpoint: Condition,
+    recoveries: list[RecoveryRule],
 ) -> tuple[list[Step], list[OutputSpec]]:
     steps: list[Step] = []
     outputs: list[OutputSpec] = []
@@ -284,6 +328,10 @@ def _steps_and_outputs(
             # is where the flow actually arrives. Attaching it to the final read
             # would assert the state after we already depended on it.
             checkpoint=checkpoint if action.step_id == last_navigating else None,
+            # Recovery rules attach where a checkpoint does: interstitials and
+            # transient slowness appear on screen transitions, which is exactly
+            # where a checkpoint is there to catch them.
+            on_error=list(recoveries) if action.step_id == last_navigating else [],
             risk=classify_risk(action),
         )
         steps.append(step)
@@ -316,6 +364,31 @@ def _step_value(action: RecordedAction) -> str | ParamRef | None:
 def _last_navigating_step(actions: list[RecordedAction]) -> str | None:
     navigating = [a.step_id for a in actions if a.expect_navigation or a.action is Action.NAVIGATE]
     return navigating[-1] if navigating else None
+
+
+def declare_interstitial(when_text: str, link_name: str) -> RecoveryRule:
+    """A known, dismissible screen that stands between us and the goal.
+
+    Recoverable rather than a failure: the caller did not ask about a
+    maintenance notice. It is still recorded every time it fires, because
+    "recovered silently" and "never happened" must not look the same in the
+    evidence.
+    """
+    return RecoveryRule(
+        when=TextPresent(text=when_text),
+        do=RecoveryAction.CLICK,
+        target=TargetSpec(
+            description=f"{link_name} link on the {when_text.lower()} interstitial",
+            rationale=(
+                "Links carry an accessible name from their text, so role+name "
+                "resolves this at tier 1 — the interstitial is one of the few "
+                "controls on this application that does."
+            ),
+            frame_path=["workframe"],
+            strategies=[RoleNameLocator(role="link", name=link_name)],
+        ),
+        max_attempts=2,
+    )
 
 
 def declare_outcome(code: str, text: str, message: str) -> BusinessOutcome:
