@@ -44,5 +44,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Target apps live at the repo root, outside the installed package.
+pythonpath = ["."]
 addopts = "-q"
 asyncio_mode = "auto"

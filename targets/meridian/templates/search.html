@@ -1,0 +1,38 @@
+{% extends "_base.html" %}
+{% block content %}
+<!--
+  Table-based form layout with no <label> elements. The visible text "Member ID"
+  sits in a sibling <td>; nothing associates it with the input except adjacency.
+  Chromium therefore computes no accessible name for this field, which is
+  exactly the condition the locator ladder's label-adjacency tier exists for.
+-->
+<div class="box">
+<form method="get" action="{{ url_for('member_lookup') }}">
+  <table>
+    <tr>
+      <td colspan="2"><b>MEMBER INQUIRY</b></td>
+    </tr>
+    <tr>
+      <td>Member ID</td>
+      <td><input type="text" name="f7" size="14" maxlength="10"></td>
+    </tr>
+    <tr>
+      <td>Branch</td>
+      <td>
+        <select name="f9">
+          <option value="">(all)</option>
+          <option value="0042">0042 - RIVERSIDE</option>
+          <option value="0017">0017 - NORTHGATE</option>
+        </select>
+      </td>
+    </tr>
+    <tr>
+      <td></td>
+      <td><input type="submit" value="Search"></td>
+    </tr>
+  </table>
+  {% if inject %}<input type="hidden" name="inject" value="{{ inject }}">{% endif %}
+</form>
+</div>
+{% if message %}<div class="sysmsg err">{{ message }}</div>{% endif %}
+{% endblock %}

@@ -1,0 +1,15 @@
+{% extends "_base.html" %}
+{% block content %}
+<!--
+  The unexpected interstitial. Appears once, then the same request succeeds.
+  A recoverable condition: replay should dismiss it and continue, and record
+  that it did so rather than silently swallowing it.
+-->
+<div class="box">
+<table>
+  <tr><td colspan="2"><b>SYSTEM NOTICE</b></td></tr>
+  <tr><td colspan="2">Scheduled maintenance window begins at 23:00 ET.</td></tr>
+  <tr><td colspan="2"><a href="{{ continue_url }}">Acknowledge and Continue</a></td></tr>
+</table>
+</div>
+{% endblock %}

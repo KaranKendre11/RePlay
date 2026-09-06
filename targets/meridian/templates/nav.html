@@ -1,0 +1,14 @@
+{% extends "_base.html" %}
+{% block content %}
+<!-- Nav lives in its own frame. Links target the work frame by name. -->
+<table>
+  <tr><td><a href="{{ url_for('search') }}" target="workframe">Member Inquiry</a></td></tr>
+  <tr><td><a href="{{ url_for('search') }}" target="workframe">Account Services</a></td></tr>
+  <tr><td><a href="#" target="workframe">Transaction Journal</a></td></tr>
+  <tr><td><a href="#" target="workframe">Reports</a></td></tr>
+</table>
+<div class="box">
+  <table><tr><td>TELLER</td><td>{{ teller }}</td></tr>
+  <tr><td>SESSION</td><td>{{ session_short }}</td></tr></table>
+</div>
+{% endblock %}

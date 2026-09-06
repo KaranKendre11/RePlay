@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>{{ title }}</title>
+  <style>
+    body { font-family: "Courier New", monospace; font-size: 13px;
+           background: #d4d0c8; color: #000; margin: 0; padding: 8px; }
+    table { border-collapse: collapse; }
+    td, th { padding: 2px 6px; font-size: 13px; vertical-align: top; }
+    .hdr { background: {{ brand_color }}; color: #fff; font-weight: bold;
+           padding: 4px 8px; letter-spacing: 1px; }
+    .box { border: 2px inset #d4d0c8; background: #e8e6e0; padding: 6px; margin-top: 6px; }
+    input[type=text], input[type=password], select {
+      font-family: "Courier New", monospace; font-size: 13px; border: 2px inset #d4d0c8; }
+    input[type=submit] { font-family: "Courier New", monospace; font-size: 13px;
+      border: 2px outset #d4d0c8; background: #d4d0c8; padding: 1px 10px; }
+    .err { color: #a00; font-weight: bold; }
+    .sysmsg { background: #ffffcc; border: 1px solid #999; padding: 4px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+<div class="hdr">{{ brand }} &nbsp;&middot;&nbsp; {{ screen_code }}</div>
+{% block content %}{% endblock %}
+</body>
+</html>
