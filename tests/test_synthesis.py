@@ -20,6 +20,7 @@ from replay.synthesis import (
     SynthesisError,
     classify_risk,
     declare_outcome,
+    infer_pattern,
     infer_type,
     slug,
     synthesize,
@@ -146,7 +147,7 @@ def test_the_artifact_carries_no_transcript():
 def test_a_stable_checkpoint_is_used_as_offered():
     synthesis = synthesize(run(), name="lookup_balance")
     assert synthesis.checkpoint_text == "Current Balance"
-    assert synthesis.notes == []
+    assert not [n for n in synthesis.notes if "checkpoint" in n], "no substitution needed"
 
 
 def test_a_volatile_checkpoint_is_replaced_and_the_reason_recorded():
@@ -289,6 +290,26 @@ def test_slug_produces_valid_identifiers(raw, expected):
 )
 def test_type_inference(raw, expected):
     assert infer_type(raw).value == expected
+
+
+def test_an_input_pattern_is_inferred_from_the_recorded_example():
+    """Conservative: records that the value was all digits, nothing more.
+
+    Without it, ``member_id="oops"`` runs the whole flow and returns
+    MEMBER_NOT_FOUND — a caller bug wearing a business answer's clothes.
+    """
+    artifact = synthesize(run(), name="lookup_balance").artifact
+    assert artifact.inputs[0].pattern == r"^\d+$"
+    assert any("inferred from the single recorded example" in n for n in artifact.provenance.notes)
+
+
+@pytest.mark.parametrize(
+    ("example", "expected"),
+    [("12345", r"^\d+$"), ("VACATION FUND", None), ("4,211.03", None), ("", None), (None, None)],
+)
+def test_no_pattern_is_invented_beyond_what_was_observed(example, expected):
+    """One example cannot tell you the domain, only the shape that was used."""
+    assert infer_pattern(example) == expected
 
 
 def test_provenance_records_when_and_by_what():

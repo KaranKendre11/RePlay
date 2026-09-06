@@ -98,6 +98,25 @@ def slug(text: str, fallback: str = "value") -> str:
     return cleaned[:64]
 
 
+def infer_pattern(value: str | None) -> str | None:
+    """A conservative shape constraint, taken from the value actually used.
+
+    Not an attempt to guess the domain — one example cannot tell you that member
+    IDs are five digits. It records only what is unambiguous: an all-digit value
+    was supplied, so a non-numeric argument is a caller mistake rather than a
+    lookup that legitimately found nothing.
+
+    That distinction is the whole point. Without it, ``member_id="oops"`` runs
+    the entire flow and comes back ``MEMBER_NOT_FOUND`` — a caller bug wearing
+    a business answer's clothes, which is exactly the conflation this project
+    is supposed to avoid. A reviewer can tighten the pattern; the artifact is a
+    document.
+    """
+    if value and value.strip().isdigit():
+        return r"^\d+$"
+    return None
+
+
 def infer_type(value: str | None) -> ValueType:
     if value is None:
         return ValueType.STRING
@@ -179,6 +198,12 @@ def synthesize(
 
     checkpoint, checkpoint_text, notes = choose_checkpoint(result)
     inputs = _inputs(result)
+    notes.extend(
+        f"pattern {spec.pattern!r} on {spec.name!r} was inferred from the single recorded "
+        "example; tighten it if the real format is narrower"
+        for spec in inputs
+        if spec.pattern
+    )
     steps, outputs = _steps_and_outputs(successful, result, checkpoint)
 
     max_risk = max(
@@ -226,6 +251,7 @@ def _inputs(result: DiscoveryResult) -> list[ParamSpec]:
             description=f"Supplied per invocation. Recorded example: {value!r}.",
             required=True,
             example=value,
+            pattern=infer_pattern(value),
         )
         for name, value in result.parameters.items()
     ]
