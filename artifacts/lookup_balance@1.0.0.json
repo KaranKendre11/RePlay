@@ -1,0 +1,254 @@
+{
+  "schema_version": "1.0",
+  "name": "lookup_balance",
+  "version": "1.0.0",
+  "title": "Look up a member's savings balance",
+  "description": "Search MERIDIAN CORE for a member by ID and return the current balance of their savings account. Read-only: performs no state change.",
+  "app": {
+    "product": "MERIDIAN CORE",
+    "product_version": "7.2",
+    "surface": "legacy_web",
+    "entry_url_pattern": "http://127.0.0.1:8080/"
+  },
+  "inputs": [
+    {
+      "name": "member_id",
+      "type": "string",
+      "description": "Institution member number, as printed on the account.",
+      "required": true,
+      "sensitive": false,
+      "example": "12345",
+      "pattern": "^\\d{4,10}$"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "savings_balance",
+      "type": "money",
+      "description": "Current balance of the member's savings account, as displayed.",
+      "source": {
+        "step_id": "s4",
+        "extraction": "text"
+      }
+    },
+    {
+      "name": "member_name",
+      "type": "string",
+      "description": "Registered name on the member record, for caller confirmation.",
+      "source": {
+        "step_id": "s5",
+        "extraction": "text"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "intent": "Open the teller console and land on the member inquiry screen.",
+      "action": "navigate",
+      "value": "http://127.0.0.1:8080/",
+      "waits": [
+        {
+          "kind": "condition",
+          "condition": {
+            "kind": "text_present",
+            "text": "MEMBER INQUIRY",
+            "frame_path": [
+              "workframe"
+            ]
+          },
+          "timeout_ms": 10000
+        }
+      ],
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s2",
+      "intent": "Enter the member ID supplied by the caller.",
+      "action": "type",
+      "target": {
+        "description": "Member ID input",
+        "rationale": "Measured on this app: get_by_role('textbox', name='Member ID') returns zero matches, because nothing associates the visible label with the control — no <label for>, no aria-label, just an adjacent table cell. Role+name is recorded first anyway so the capability upgrades for free if the vendor ever adds accessible names, but label adjacency is what actually resolves here today.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "role_name",
+            "role": "textbox",
+            "name": "Member ID",
+            "exact": true
+          },
+          {
+            "kind": "label_adjacent",
+            "label": "Member ID",
+            "relation": "right",
+            "control": "input"
+          },
+          {
+            "kind": "selector",
+            "engine": "css",
+            "expression": "input[name='f7']"
+          }
+        ]
+      },
+      "value": {
+        "param": "member_id"
+      },
+      "waits": [],
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s3",
+      "intent": "Submit the search and land on the member detail screen.",
+      "action": "click",
+      "target": {
+        "description": "Search button",
+        "rationale": "Submit controls derive an accessible name from their value attribute, so tier 1 resolves cleanly here. This is the contrast that justifies ranking per target rather than picking one strategy per application.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "role_name",
+            "role": "button",
+            "name": "Search",
+            "exact": true
+          },
+          {
+            "kind": "selector",
+            "engine": "css",
+            "expression": "input[type='submit']"
+          }
+        ]
+      },
+      "waits": [
+        {
+          "kind": "navigation",
+          "timeout_ms": 15000
+        }
+      ],
+      "checkpoint": {
+        "kind": "all_of",
+        "conditions": [
+          {
+            "kind": "url_matches",
+            "pattern": "**/member*",
+            "frame_path": [
+              "workframe"
+            ]
+          },
+          {
+            "kind": "text_present",
+            "text": "Current Balance",
+            "frame_path": [
+              "workframe"
+            ]
+          }
+        ]
+      },
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s4",
+      "intent": "Read the savings balance from the account table.",
+      "action": "read",
+      "target": {
+        "description": "Current balance on the SAVINGS row",
+        "rationale": "The balance carries no id, class, or heading association — it is the third cell of whichever row begins with SAVINGS. Anchoring on the row label survives reordering of the account list, which a positional selector would not.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "anchored_text",
+            "anchor": "SAVINGS",
+            "relation": "same_row",
+            "offset": 2,
+            "nth": 0
+          },
+          {
+            "kind": "selector",
+            "engine": "xpath",
+            "expression": "//tr[td[normalize-space()='SAVINGS']]/td[3]"
+          }
+        ]
+      },
+      "waits": [],
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s5",
+      "intent": "Read the member name so the caller can confirm the right record.",
+      "action": "read",
+      "target": {
+        "description": "Registered member name",
+        "rationale": "Second cell of the row labelled Name in the summary table. Same adjacency reasoning as the input fields: the label is a neighbouring cell and nothing else identifies the value.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "anchored_text",
+            "anchor": "Name",
+            "relation": "same_row",
+            "offset": 1,
+            "nth": 0
+          },
+          {
+            "kind": "selector",
+            "engine": "xpath",
+            "expression": "//tr[td[normalize-space()='Name']]/td[2]"
+          }
+        ]
+      },
+      "waits": [],
+      "on_error": [],
+      "risk": "safe"
+    }
+  ],
+  "outcomes": [
+    {
+      "code": "MEMBER_NOT_FOUND",
+      "detect": {
+        "kind": "text_present",
+        "text": "MEMBER_NOT_FOUND",
+        "frame_path": [
+          "workframe"
+        ]
+      },
+      "message": "No member on file for the supplied ID.",
+      "terminal": true
+    },
+    {
+      "code": "PERMISSION_DENIED",
+      "detect": {
+        "kind": "text_present",
+        "text": "PERMISSION_DENIED",
+        "frame_path": [
+          "workframe"
+        ]
+      },
+      "message": "Teller authority is insufficient for this member record.",
+      "terminal": true
+    }
+  ],
+  "policy": {
+    "max_risk": "safe",
+    "requires_approval": false
+  },
+  "provenance": {
+    "recorded_at": "2026-09-06T00:00:00Z",
+    "recorded_by": "hand-authored reference example",
+    "app_version_seen": "7.2"
+  },
+  "reliability": {
+    "replays": 0,
+    "successes": 0,
+    "approval": "draft"
+  }
+}
