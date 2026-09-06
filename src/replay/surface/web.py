@@ -69,6 +69,12 @@ from replay.surface.base import (
     SurfaceError,
     TargetNotFound,
 )
+from replay.surface.inventory import (
+    COLLECT_JS,
+    MAX_CANDIDATES,
+    Candidate,
+    candidates_from,
+)
 
 #: Element types a label-adjacency search will accept as "the control".
 CONTROL_TAGS = ("input", "select", "textarea", "button")
@@ -256,6 +262,25 @@ class WebSurface:
             return self.frame_for(path).locator("body").inner_text(timeout=2_000)
         except (PlaywrightError, PlaywrightTimeout, FrameNotFound):
             return ""
+
+    def inventory(self) -> list[Candidate]:
+        """Enumerate what is on screen, each with a durable locator ladder.
+
+        Used by discovery so the model chooses *which* control while the surface
+        decides *how to name it*. Frames are walked in order, so indices are
+        stable within a single observation.
+        """
+        found: list[Candidate] = []
+        for path in self._frame_paths():
+            if len(found) >= MAX_CANDIDATES:
+                break
+            try:
+                raw = self.frame_for(path).evaluate(COLLECT_JS)
+            except (PlaywrightError, PlaywrightTimeout, FrameNotFound):
+                continue
+            room = MAX_CANDIDATES - len(found)
+            found.extend(candidates_from(raw[:room], path, start=len(found)))
+        return found
 
     # -- locator ladder ---------------------------------------------------
 

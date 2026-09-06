@@ -1,0 +1,23 @@
+{
+  "rendered": "STEP 1 of 15\nURL: http://127.0.0.1:8080/\nHTTP STATUS: 200\n\nCONTROLS you can act on:\n  [0] link  \"Member Inquiry\"  frame=navframe\n  [1] link  \"Account Services\"  frame=navframe\n  [2] link  \"Transaction Journal\"  frame=navframe\n  [3] link  \"Reports\"  frame=navframe\n  [6] textbox  label='Member ID'  frame=workframe\n  [7] combobox  label='Branch'  options=['0042', '0017']  frame=workframe\n  [8] button  \"Search\"  frame=workframe\n\nVALUES you can read:\n  [4] cell  label='TELLER'  text='TLR0431'  frame=navframe\n  [5] cell  label='SESSION'  text='799cc384'  frame=navframe",
+  "url": "http://127.0.0.1:8080/",
+  "title": "MERIDIAN CORE",
+  "http_status": 200,
+  "dialogs_seen": [],
+  "frames": [
+    {
+      "path": [
+        "navframe"
+      ],
+      "url": "http://127.0.0.1:8080/nav",
+      "aria": "- text: MERIDIAN CORE · NAV0001\n- table:\n  - rowgroup:\n    - row \"Member Inquiry\":\n      - cell \"Member Inquiry\":\n        - link \"Member Inquiry\":\n          - /url: /search\n    - row \"Account Services\":\n      - cell \"Account Services\":\n        - link \"Account Services\":\n          - /url: /search\n    - row \"Transaction Journal\":\n      - cell \"Transaction Journal\":\n        - link \"Transaction Journal\":\n          - /url: \"#\"\n    - row \"Reports\":\n      - cell \"Reports\":\n        - link \"Reports\":\n          - /url: \"#\"\n- table:\n  - rowgroup:\n    - row \"TELLER TLR0431\":\n      - cell \"TELLER\"\n      - cell \"TLR0431\"\n    - row \"SESSION 799cc384\":\n      - cell \"SESSION\"\n      - cell \"799cc384\""
+    },
+    {
+      "path": [
+        "workframe"
+      ],
+      "url": "http://127.0.0.1:8080/search",
+      "aria": "- text: MERIDIAN CORE · INQ0100\n- table:\n  - rowgroup:\n    - row \"MEMBER INQUIRY\":\n      - cell \"MEMBER INQUIRY\"\n    - row \"Member ID\":\n      - cell \"Member ID\"\n      - cell:\n        - textbox\n    - row \"Branch (all)\":\n      - cell \"Branch\"\n      - cell \"(all)\":\n        - combobox:\n          - option \"(all)\" [selected]\n          - option \"0042 - RIVERSIDE\"\n          - option \"0017 - NORTHGATE\"\n    - row \"Search\":\n      - cell\n      - cell \"Search\":\n        - button \"Search\""
+    }
+  ]
+}
