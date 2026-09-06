@@ -1,0 +1,48 @@
+[project]
+name = "replay"
+version = "0.1.0"
+description = "Record-once, replay-many computer-use automation for legacy back-office applications"
+readme = "README.md"
+authors = [
+    { name = "Karan Kendre", email = "kendre.k@northeastern.edu" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "flask>=3.1.3",
+    "jinja2>=3.1.6",
+    "openai>=3.8.0",
+    "playwright>=1.62.0",
+    "pydantic>=2",
+    "python-dotenv>=1.2.3",
+    "typer>=0.27.2",
+    "uvicorn[standard]>=0.52.4",
+]
+
+[project.scripts]
+replay = "replay.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Planning docs contain illustrative Python that is not meant to be formatted.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
