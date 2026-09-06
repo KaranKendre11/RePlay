@@ -8,7 +8,15 @@
     "product": "MERIDIAN CORE",
     "product_version": "7.2",
     "surface": "legacy_web",
-    "entry_url_pattern": "http://127.0.0.1:8080/"
+    "entry_url_pattern": "http://127.0.0.1:8080/",
+    "session_lost_markers": [
+      "SESSION EXPIRED",
+      "SEC-0031"
+    ],
+    "application_error_markers": [
+      "APPLICATION ERROR",
+      "SYS-500"
+    ]
   },
   "inputs": [
     {
@@ -244,7 +252,8 @@
   "provenance": {
     "recorded_at": "2026-09-06T00:00:00Z",
     "recorded_by": "hand-authored reference example",
-    "app_version_seen": "7.2"
+    "app_version_seen": "7.2",
+    "notes": []
   },
   "reliability": {
     "replays": 0,

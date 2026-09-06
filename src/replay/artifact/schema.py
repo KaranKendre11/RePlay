@@ -86,6 +86,19 @@ class AppRef(Model):
     product_version: str | None = None
     surface: SurfaceKind = SurfaceKind.LEGACY_WEB
     entry_url_pattern: str = Field(description="Glob or template for the entry point.")
+    session_lost_markers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Screen text meaning the session expired rather than the step being "
+            "wrong. Declared per product because it is product knowledge: an "
+            "engine holding one vendor's error codes would silently stop "
+            "classifying against every other one."
+        ),
+    )
+    application_error_markers: list[str] = Field(
+        default_factory=list,
+        description="Screen text meaning the application itself failed, e.g. its 500 page.",
+    )
 
 
 class ParamSpec(Model):

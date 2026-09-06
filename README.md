@@ -65,8 +65,14 @@ seconds. Add `--headed` to watch it happen.
 uv run replay discover \
   --goal "Look up member 12345 and read their current savings balance." \
   --target http://127.0.0.1:8080/ \
-  --save-as lookup_balance
+  --save-as lookup_balance \
+  --profile targets/meridian/review.toml
 ```
+
+`--profile` supplies the product knowledge one happy-path run cannot discover: the business
+outcomes the capability can legitimately reach, the interstitials worth recovering from, and the
+screen text that means the session died rather than the step being wrong. Omit it and the
+capability still synthesises — it just declares no outcomes, and says so.
 
 **2. Replay.** The same job, with no model anywhere in the path.
 
@@ -149,7 +155,7 @@ replay actually agrees — so the app and the engine cannot drift apart silently
 ## Tests
 
 ```bash
-uv run pytest        # 277 tests, ~90s, no API key needed
+uv run pytest        # 278 tests, ~90s, no API key needed
 uv run ruff check .
 ```
 
@@ -172,6 +178,7 @@ src/replay/
   escalation/   intervention requests, control transfer, operator console
   api.py        the capability catalog an agent calls
 targets/meridian/   the hostile legacy app, and a second tenant's variant
+  review.toml       product knowledge a happy-path run cannot discover
 artifacts/          saved capabilities (JSON, reviewable, diffable)
 overrides/          per-tenant deltas
 evidence/           committed runs — two real gpt-5 discoveries, six replays

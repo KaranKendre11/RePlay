@@ -65,12 +65,6 @@ from replay.surface.base import (
     TargetNotFound,
 )
 
-#: Surface conditions that mean the session is gone rather than the step wrong.
-SESSION_MARKERS = ("SESSION EXPIRED", "SEC-0031")
-
-#: Surface conditions that mean the application broke.
-APPLICATION_MARKERS = ("APPLICATION ERROR", "SYS-500")
-
 
 def _describe(condition: Any) -> str:
     """A short, readable rendering of a condition.
@@ -456,11 +450,20 @@ class ReplayExecutor:
         reporting them that way would send someone hunting for a drifted
         locator when the truth is that the far side fell over or logged us out.
         Those need a re-login or a human, never a retry.
+
+        Which text means which is *product* knowledge, so it is read from the
+        artifact rather than held here. Every vendor spells these differently,
+        and an engine carrying one vendor's strings would classify correctly on
+        that product and silently stop classifying on all the others. A product
+        that declares no markers simply gets no reclassification, which is the
+        honest degradation — better than confidently mislabelling.
         """
-        if any(marker in observed for marker in SESSION_MARKERS):
-            return FailureClass.SESSION_LOST
-        if any(marker in observed for marker in APPLICATION_MARKERS):
-            return FailureClass.APPLICATION_ERROR
+        for marker in self.artifact.app.session_lost_markers:
+            if marker in observed:
+                return FailureClass.SESSION_LOST
+        for marker in self.artifact.app.application_error_markers:
+            if marker in observed:
+                return FailureClass.APPLICATION_ERROR
         return None
 
     def _diagnose(self, step: Step, report: StepReport) -> Failure:

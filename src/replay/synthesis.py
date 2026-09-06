@@ -189,6 +189,8 @@ def synthesize(
     surface: SurfaceKind = SurfaceKind.LEGACY_WEB,
     outcomes: list[BusinessOutcome] | None = None,
     recoveries: list[RecoveryRule] | None = None,
+    session_lost_markers: list[str] | None = None,
+    application_error_markers: list[str] | None = None,
 ) -> Synthesis:
     """Distil a successful run into a capability."""
     if result.status is not StopReason.GOAL_MET:
@@ -227,6 +229,8 @@ def synthesize(
             product_version=product_version,
             surface=surface,
             entry_url_pattern=result.target,
+            session_lost_markers=list(session_lost_markers or []),
+            application_error_markers=list(application_error_markers or []),
         ),
         inputs=inputs,
         outputs=outputs,
@@ -367,7 +371,9 @@ def _last_navigating_step(actions: list[RecordedAction]) -> str | None:
     return navigating[-1] if navigating else None
 
 
-def declare_interstitial(when_text: str, link_name: str) -> RecoveryRule:
+def declare_interstitial(
+    when_text: str, link_name: str, frame_path: list[str] | None = None
+) -> RecoveryRule:
     """A known, dismissible screen that stands between us and the goal.
 
     Recoverable rather than a failure: the caller did not ask about a
@@ -385,7 +391,7 @@ def declare_interstitial(when_text: str, link_name: str) -> RecoveryRule:
                 "resolves this at tier 1 — the interstitial is one of the few "
                 "controls on this application that does."
             ),
-            frame_path=["workframe"],
+            frame_path=list(frame_path or []),
             strategies=[RoleNameLocator(role="link", name=link_name)],
         ),
         max_attempts=2,

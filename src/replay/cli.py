@@ -10,6 +10,7 @@ Subcommands are added as their milestones land:
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 from typing import Annotated
 
@@ -43,19 +44,45 @@ def version() -> None:
     typer.echo(__version__)
 
 
-MERIDIAN_OUTCOMES = [
-    ("MEMBER_NOT_FOUND", "MEMBER_NOT_FOUND", "No member on file for the supplied ID."),
-    ("PERMISSION_DENIED", "PERMISSION_DENIED", "Teller authority is insufficient."),
-    (
-        "VALIDATION_REJECTED",
-        "VALIDATION_REJECTED",
-        "The application rejected the submitted values.",
-    ),
-]
+def _load_profile(path: Path | None) -> dict:
+    """Product knowledge a single happy-path run cannot discover.
 
-#: Recoverable conditions this application is known to produce. Like outcomes,
-#: declared at review rather than inferred: a happy-path run never met one.
-MERIDIAN_RECOVERIES = [("SYSTEM NOTICE", "Acknowledge and Continue")]
+    The business outcomes a capability can legitimately reach, the interstitials
+    worth recovering from, and the screen text that means the session died
+    rather than the step being wrong. All three are properties of the product,
+    not of the run, so a run cannot infer them and synthesis refuses to invent
+    them.
+
+    Read from a file beside the application rather than held here. This module
+    should not know which products exist, and an engine carrying one vendor's
+    error strings classifies correctly against that vendor and silently stops
+    classifying against every other.
+    """
+    from replay.synthesis import declare_interstitial, declare_outcome
+
+    if path is None:
+        return {}
+    if not path.exists():
+        typer.secho(f"no profile at {path}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    raw = tomllib.loads(path.read_text())
+    return {
+        "product": raw.get("product", "unknown"),
+        "outcomes": [
+            declare_outcome(o["code"], o["text"], o["message"]) for o in raw.get("outcome", [])
+        ],
+        "recoveries": [
+            declare_interstitial(r["when_text"], r["link_name"], r.get("frame_path"))
+            for r in raw.get("recovery", [])
+        ],
+        "session_lost_markers": raw.get("session_lost_markers", []),
+        "application_error_markers": raw.get("application_error_markers", []),
+    }
+
+
+#: Where the profile for the bundled target application lives.
+PROFILE_HELP = "Product knowledge to attach at review, e.g. targets/meridian/review.toml."
 
 
 @app.command()
@@ -82,6 +109,7 @@ def discover(
         str | None,
         typer.Option("--save-as", help="Synthesise the run into a capability with this name."),
     ] = None,
+    profile: Annotated[Path | None, typer.Option("--profile", help=PROFILE_HELP)] = None,
 ) -> None:
     """Run the LLM-driven discovery loop against a live application.
 
@@ -129,7 +157,7 @@ def discover(
         raise typer.Exit(code=1)
 
     if save_as:
-        _synthesise_and_save(result, save_as)
+        _synthesise_and_save(result, save_as, profile=profile)
 
 
 @app.command(name="run")
@@ -373,6 +401,7 @@ def synthesize(
     version: Annotated[
         str, typer.Option("--version", help="Semver for this capability.")
     ] = "1.0.0",
+    profile: Annotated[Path | None, typer.Option("--profile", help=PROFILE_HELP)] = None,
 ) -> None:
     """Distil a recorded discovery run into a capability artifact.
 
@@ -382,29 +411,33 @@ def synthesize(
     from replay.agent.loop import DiscoveryResult
 
     payload = json.loads((evidence_dir / "result.json").read_text())
-    _synthesise_and_save(DiscoveryResult.from_dict(payload), name, version=version)
+    _synthesise_and_save(
+        DiscoveryResult.from_dict(payload), name, version=version, profile=profile
+    )
 
 
-def _synthesise_and_save(result, name: str, *, version: str = "1.0.0") -> None:
+def _synthesise_and_save(
+    result, name: str, *, version: str = "1.0.0", profile: Path | None = None
+) -> None:
     from replay.artifact import ArtifactStore
-    from replay.synthesis import SynthesisError, declare_interstitial, declare_outcome
+    from replay.synthesis import SynthesisError
     from replay.synthesis import synthesize as distil
 
     try:
-        synthesis = distil(
-            result,
-            name=name,
-            version=version,
-            product="MERIDIAN CORE",
-            outcomes=[declare_outcome(*row) for row in MERIDIAN_OUTCOMES],
-            recoveries=[declare_interstitial(*row) for row in MERIDIAN_RECOVERIES],
-        )
+        synthesis = distil(result, name=name, version=version, **_load_profile(profile))
     except SynthesisError as exc:
         typer.secho(f"synthesis failed: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
 
     for note in synthesis.notes:
         typer.secho(f"note:       {note}", fg=typer.colors.YELLOW)
+
+    if synthesis.needs_outcomes:
+        typer.secho(
+            "note:       no business outcomes declared, so this capability tells a "
+            "caller nothing about how it can legitimately not-succeed; pass --profile",
+            fg=typer.colors.YELLOW,
+        )
 
     path = ArtifactStore().save(synthesis.artifact, overwrite=True)
     typer.secho(f"capability: {synthesis.artifact.ref} → {path}", fg=typer.colors.GREEN)

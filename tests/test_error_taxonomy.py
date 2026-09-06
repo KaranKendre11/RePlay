@@ -15,7 +15,7 @@ than asserted.
 import pytest
 
 from replay.artifact import ArtifactStore
-from replay.artifact.schema import ApprovalState
+from replay.artifact.schema import ApprovalState, CapabilityArtifact
 from replay.engine import FailureClass, ReplayExecutor, ReplayStatus
 from replay.evidence import EvidenceRecorder
 from replay.policy import Allowlist, RiskGate
@@ -49,7 +49,12 @@ def replay(server: str, tmp_path, injection: Injection | None, run_id: str, capa
         capability, arguments = capability
     else:
         capability, arguments = CAPABILITY_FOR.get(injection, DEFAULT)
-    artifact = ArtifactStore("artifacts").load(capability)
+    # Usually a name to load; a few tests hand in an artifact they have altered.
+    artifact = (
+        capability
+        if isinstance(capability, CapabilityArtifact)
+        else ArtifactStore("artifacts").load(capability)
+    )
     target = f"{server}/?inject={injection.value}" if injection else server
 
     # The write capability is irreversible and unapproved, so the guardrails
@@ -182,6 +187,37 @@ def test_an_application_error_is_attributed_to_the_application(meridian_server, 
 
     assert result.status is ReplayStatus.FAILED
     assert result.failure.failure_class is FailureClass.APPLICATION_ERROR
+
+
+def test_the_engine_reads_those_markers_from_the_artifact_not_from_itself(
+    meridian_server, tmp_path
+):
+    """Which screen text means "the app broke" is product knowledge, not engine knowledge.
+
+    Every vendor spells it differently. An engine holding one product's error
+    codes would classify correctly against that product and silently stop
+    classifying against all the others — the failure mode being guarded here.
+
+    Stripping the declaration must therefore change the answer. If this test
+    passes with the markers removed, they have leaked back into the engine.
+    """
+    bare = ArtifactStore("artifacts").load("lookup_balance")
+    bare = bare.model_copy(deep=True)
+    bare.app.application_error_markers = []
+    bare.app.session_lost_markers = []
+
+    result = replay(
+        meridian_server,
+        tmp_path,
+        Injection.ERROR500,
+        "fail-500-undeclared",
+        capability=(bare, {"member_id": "12345"}),
+    )
+
+    assert result.status is ReplayStatus.FAILED
+    assert result.failure.failure_class is not FailureClass.APPLICATION_ERROR, (
+        "the classification came from the engine rather than the artifact"
+    )
 
 
 @pytest.mark.parametrize("injection", [Injection.TIMEOUT, Injection.ERROR500])
