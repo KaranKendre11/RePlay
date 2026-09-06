@@ -65,6 +65,7 @@ from replay.artifact.locators import (
     SelectorLocator,
 )
 from replay.artifact.schema import Action, TargetSpec
+from replay.policy.allowlist import Allowlist, PolicyRefused
 from replay.surface.base import (
     ActionOutcome,
     Controller,
@@ -112,6 +113,7 @@ class WebSurface:
         viewport: tuple[int, int] = (1280, 900),
         default_dialog: DialogPolicy = DialogPolicy.DISMISS,
         slow_mo_ms: int = 0,
+        allowlist: Allowlist | None = None,
     ) -> None:
         self._pw: Playwright = sync_playwright().start()
         self.browser = self._pw.chromium.launch(headless=not headed, slow_mo=slow_mo_ms)
@@ -126,6 +128,10 @@ class WebSurface:
         self._dialogs: list[str] = []
         self._last_status: int | None = None
         self._controller = Controller.AUTOMATION
+        # No allowlist means no restriction, which is only ever acceptable in a
+        # test. Production callers pass one; the CLI always does.
+        self.allowlist = allowlist
+        self._masked: list[TargetSpec] = []
 
         self.page.on("dialog", self._handle_dialog)
         self.page.on("response", self._note_response)
@@ -248,6 +254,24 @@ class WebSurface:
 
     # -- observe ----------------------------------------------------------
 
+    def mask_in_screenshots(self, target: TargetSpec) -> None:
+        """Cover this control before any screenshot is written.
+
+        Explicit value masking cannot help here: a screenshot is pixels, and a
+        password sitting visibly in a field would be persisted in full by
+        evidence that is otherwise carefully redacted.
+        """
+        self._masked.append(target)
+
+    def _mask_locators(self) -> list[PWLocator]:
+        found: list[PWLocator] = []
+        for target in self._masked:
+            try:
+                found.append(self.resolve(target, timeout_ms=500).handle)
+            except (TargetNotFound, FrameNotFound, PlaywrightError):
+                continue
+        return found
+
     def observe(self, *, screenshot: bool = True) -> Observation:
         views: list[FrameView] = []
         for path in self._frame_paths():
@@ -260,7 +284,7 @@ class WebSurface:
         shot: bytes | None = None
         if screenshot:
             try:
-                shot = self.page.screenshot(full_page=False)
+                shot = self.page.screenshot(full_page=False, mask=self._mask_locators())
             except PlaywrightError:
                 shot = None
 
@@ -472,6 +496,16 @@ class WebSurface:
         self._require_control()
         if on_dialog is not None:
             self._pending_dialog = on_dialog
+
+        # Enforced here rather than at the call site, so discovery, replay and
+        # recovery rules are all covered without knowing the allowlist exists.
+        if self.allowlist is not None:
+            try:
+                self.allowlist.check_action(action)
+                if action is Action.NAVIGATE and value:
+                    self.allowlist.check_navigation(str(value))
+            except PolicyRefused as refusal:
+                return self._done(action, False, since=len(self._dialogs), error=str(refusal))
 
         before = len(self._dialogs)
         resolution: Resolution | None = None
