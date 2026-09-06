@@ -22,11 +22,42 @@ out afterwards why something broke, so it is captured here and nowhere else.
 | Directory | Goal | Result |
 |---|---|---|
 | `discovery-20260906T085541Z` | Look up member 12345 and read their savings balance | `goal_met`, 4 actions |
+| `discovery-20260906T091017Z` | The same goal, and the model proposed a checkpoint that was rejected | `goal_met`, 4 actions |
 | `discovery-20260906T211130Z` | Open a sub-account and reach the confirmation screen | `goal_met`, 9 actions |
 
-Both are genuine `gpt-5` runs against the live application. The second is the interesting one: it
-contains an irreversible step, and the model had to discover that the submit button raises a
-confirmation dialog which must be accepted.
+All three are genuine `gpt-5` runs against the live application.
+
+The third contains an irreversible step, and the model had to discover that the submit button
+raises a confirmation dialog which must be accepted.
+
+The second is the one worth reading against `REPORT.md` §7. Asked for text proving the goal was
+met, the model offered `"4,211.03"` — the balance it had just read. That is true for member 12345
+and false for every other member, so a capability asserting it would pass once and fail forever.
+The loop catches this because it knows which values were parameters and which were outputs, and
+the warning is in `result.json`:
+
+> checkpoint `'4,211.03'` contains the value read as output `'current_savings_balance'`; it
+> asserts this run's data rather than the state reached
+
+Synthesising a capability from this run then fails outright:
+
+```
+$ uv run replay synthesize evidence/discovery-20260906T091017Z --name lookup_balance
+synthesis failed: no stable checkpoint available: the model proposed '4,211.03', which varies
+per invocation, and no stable text was captured on the success screen
+```
+
+Refusing is the right answer here, and it is the third of the three behaviours `REPORT.md` §7
+describes. This run predates the loop capturing stable alternatives from the success screen, so
+there is genuinely nothing to substitute — `result.json` carries no `checkpoint_candidates`,
+where the later `discovery-20260906T211130Z` carries eleven and synthesis substitutes instead of
+refusing. Emitting a capability whose success condition only holds for member 12345 would be
+worse than emitting none.
+
+Compare with `discovery-20260906T085541Z`: same goal, same loop, and the model proposed
+`"Open Sub-Account"` unprompted, so no warning fired and the capability synthesised cleanly. Two
+runs against the same screen, two different choices by the model. That difference is the whole
+case for verifying the checkpoint rather than trusting it.
 
 ## Replay — the same work, without a model
 
