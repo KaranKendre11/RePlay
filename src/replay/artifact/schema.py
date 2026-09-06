@@ -345,6 +345,13 @@ class Provenance(Model):
     run_id: str | None = None
     transcript_ref: str | None = None
     app_version_seen: str | None = None
+    notes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Decisions synthesis made that a reviewer should see, such as "
+            "replacing a checkpoint the model proposed."
+        ),
+    )
 
 
 class Reliability(Model):
