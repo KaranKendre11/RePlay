@@ -1,0 +1,15 @@
+{% extends "_base.html" %}
+{% block content %}
+<!--
+  One template for every non-success terminal state. The distinguishing signal
+  is the code text, which is what the artifact's outcome detectors match on.
+-->
+<div class="box">
+<table>
+  <tr><td colspan="2"><b>{{ heading }}</b></td></tr>
+  <tr><td>Code</td><td><b>{{ code }}</b></td></tr>
+  <tr><td>Detail</td><td class="err">{{ detail }}</td></tr>
+</table>
+</div>
+{% if back_url %}<div class="sysmsg"><a href="{{ back_url }}">Return</a></div>{% endif %}
+{% endblock %}

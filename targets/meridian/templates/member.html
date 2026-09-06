@@ -1,0 +1,42 @@
+{% extends "_base.html" %}
+{% block content %}
+<!--
+  Nested tables: an outer layout table whose cells contain the real data tables.
+  Balance is not addressable by any class or id; it is found by walking from the
+  row whose first cell reads SAVINGS.
+-->
+<div class="box">
+<table>
+  <tr>
+    <td>
+      <table>
+        <tr><td>Member ID</td><td><b>{{ member.member_id }}</b></td></tr>
+        <tr><td>Name</td><td><b>{{ member.name }}</b></td></tr>
+        <tr><td>Branch</td><td>{{ member.branch }}</td></tr>
+        <tr><td>Status</td><td>{{ member.status }}</td></tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <table border="1" cellspacing="0">
+        <tr><th>Type</th><th>Account No</th><th>Current Balance</th><th>Status</th></tr>
+        {% for acct in member.accounts %}
+        <tr>
+          <td>{{ acct.kind }}</td>
+          <td>{{ acct.number }}</td>
+          <td align="right">{{ acct.balance }}</td>
+          <td>{{ acct.status }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <a href="{{ url_for('subaccount_new', member_id=member.member_id) }}{{ inject_qs }}">Open Sub-Account</a>
+    </td>
+  </tr>
+</table>
+</div>
+{% endblock %}

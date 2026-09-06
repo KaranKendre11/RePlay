@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<!--
+  A real <frameset>. Not an iframe layout that merely resembles one.
+  Forces the surface layer to traverse frames and carry a frame path on every
+  observed node, which is the single most common structural surprise in
+  legacy enterprise applications.
+-->
+<html>
+<head><title>MERIDIAN CORE</title></head>
+<frameset cols="180,*" frameborder="1" border="2">
+  <frame name="navframe" src="{{ url_for('nav') }}" scrolling="no">
+  <frame name="workframe" src="{{ start_url }}">
+</frameset>
+<noframes><body>This terminal requires frame support.</body></noframes>
+</html>

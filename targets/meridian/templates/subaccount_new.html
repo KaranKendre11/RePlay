@@ -1,0 +1,38 @@
+{% extends "_base.html" %}
+{% block content %}
+<!--
+  The write flow. Submit fires a native confirm(), which blocks the page until
+  a dialog handler answers it — a step the artifact must record explicitly
+  rather than stumble into.
+-->
+<div class="box">
+<form method="post" action="{{ url_for('subaccount_create', member_id=member.member_id) }}"
+      onsubmit="return confirm('Open new sub-account for member {{ member.member_id }}?');">
+  <table>
+    <tr><td colspan="2"><b>OPEN SUB-ACCOUNT</b> &nbsp; {{ member.name }}</td></tr>
+    <tr>
+      <td>Product Code</td>
+      <td>
+        <select name="f12">
+          <option value="">(select)</option>
+          <option value="S02">S02 - REGULAR SAVINGS</option>
+          <option value="S07">S07 - HOLIDAY CLUB</option>
+          <option value="S11">S11 - YOUTH SAVINGS</option>
+        </select>
+      </td>
+    </tr>
+    <tr>
+      <td>Opening Deposit</td>
+      <td><input type="text" name="f13" size="12"></td>
+    </tr>
+    <tr>
+      <td>Nickname</td>
+      <td><input type="text" name="f14" size="20" maxlength="24"></td>
+    </tr>
+    <tr><td></td><td><input type="submit" value="Submit"></td></tr>
+  </table>
+  {% if inject %}<input type="hidden" name="inject" value="{{ inject }}">{% endif %}
+</form>
+</div>
+{% if message %}<div class="sysmsg err">{{ message }}</div>{% endif %}
+{% endblock %}
