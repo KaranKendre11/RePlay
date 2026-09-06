@@ -289,6 +289,17 @@ class Step(Model):
     )
     on_error: list[RecoveryRule] = Field(default_factory=list)
     risk: RiskClass = RiskClass.SAFE
+    expected_tier: int | None = Field(
+        default=None,
+        ge=1,
+        le=6,
+        description=(
+            "The ladder tier that actually resolved this control when the flow "
+            "was recorded. Replay compares against it: resolving lower than "
+            "recorded means the deployment has moved under us, which is drift "
+            "worth surfacing even though the capability still works."
+        ),
+    )
 
     @model_validator(mode="after")
     def _action_and_operands_agree(self) -> Step:

@@ -94,14 +94,24 @@ def _describe(condition: Any) -> str:
 
 
 def rebase(url: str, base: str) -> str:
-    """Point a recorded URL at a different origin, keeping its path and query.
+    """Point a recorded URL at a different deployment of the same application.
 
-    The recorded path is part of the flow and must not change. The origin is
-    deployment detail: a different port under test, a different institution's
-    host in production.
+    The recorded path is part of the flow and is preserved. Everything in front
+    of it is deployment detail: a different port under test, a different
+    institution's host in production, and — the case that matters for
+    multi-tenant reuse — a different mount point. One tenant serves the product
+    at ``/``, another at ``/tlr``, and the flow beneath is identical.
+
+    So the base's path is treated as a prefix rather than a replacement.
+    Dropping it silently sent a cross-tenant replay to a 404 and reported it as
+    a missing frame, which pointed at entirely the wrong problem.
     """
     recorded = urlsplit(url)
     target = urlsplit(base)
+
+    prefix = target.path.rstrip("/")
+    path = f"{prefix}{recorded.path}" if prefix else recorded.path
+
     # The override may add a query the recording never had — that is how a
     # failure mode gets injected at the entry point without editing the flow.
     query = recorded.query or target.query
@@ -109,7 +119,7 @@ def rebase(url: str, base: str) -> str:
         (
             target.scheme or recorded.scheme,
             target.netloc or recorded.netloc,
-            recorded.path,
+            path or "/",
             query,
             recorded.fragment,
         )
@@ -333,7 +343,15 @@ class ReplayExecutor:
 
     def _perform(self, step: Step, bound: dict[str, str], index: int) -> StepReport:
         started = time.monotonic()
-        report = StepReport(step_id=step.id, intent=step.intent, action=step.action.value, ok=False)
+        report = StepReport(
+            step_id=step.id,
+            intent=step.intent,
+            action=step.action.value,
+            ok=False,
+            # The baseline drift is measured against: the tier that actually
+            # resolved this control when the flow was recorded.
+            expected_tier=step.expected_tier,
+        )
 
         value = self._value(step, bound)
         expect_navigation = any(w.kind is WaitKind.NAVIGATION for w in step.waits)
@@ -350,6 +368,14 @@ class ReplayExecutor:
 
         if outcome.resolution is not None:
             report.tier_used = int(outcome.resolution.tier)
+            if report.drifted:
+                self.recorder.event(
+                    "locator_drift",
+                    step_id=step.id,
+                    expected_tier=step.expected_tier,
+                    tier_used=report.tier_used,
+                    locator_kind=outcome.resolution.kind,
+                )
             report.locator_kind = outcome.resolution.kind
             report.ambiguous = outcome.resolution.ambiguous
 
@@ -368,8 +394,12 @@ class ReplayExecutor:
     def _value(self, step: Step, bound: dict[str, str]) -> str | None:
         if isinstance(step.value, ParamRef):
             return bound.get(step.value.param)
-        if step.action is Action.NAVIGATE and self.base_url and isinstance(step.value, str):
-            return rebase(step.value, self.base_url)
+        if step.action is Action.NAVIGATE and isinstance(step.value, str):
+            # An explicit target wins; otherwise the artifact's entry point,
+            # which a tenant override may have replaced. For the base
+            # deployment the two are identical and this is a no-op.
+            base = self.base_url or self.artifact.app.entry_url_pattern
+            return rebase(step.value, base) if base else step.value
         return step.value
 
     def _detect_outcome(self, step: Step) -> Outcome | None:

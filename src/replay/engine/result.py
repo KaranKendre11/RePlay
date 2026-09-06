@@ -78,6 +78,7 @@ class StepReport:
     action: str
     ok: bool
     tier_used: int | None = None
+    expected_tier: int | None = None
     locator_kind: str | None = None
     ambiguous: bool = False
     recovered: list[str] = field(default_factory=list)
@@ -86,12 +87,24 @@ class StepReport:
 
     @property
     def degraded(self) -> bool:
-        """Resolved, but by a strategy weaker than the recorded first choice.
+        """Resolved below tier 1.
 
-        The drift signal. A capability that still works only because tier 5 is
-        holding it up is one vendor release away from not working.
+        Informational rather than alarming: on a legacy app most controls have
+        no accessible name and never resolved at tier 1 in the first place.
         """
         return self.tier_used is not None and self.tier_used > 1
+
+    @property
+    def drifted(self) -> bool:
+        """Resolved *worse than it did when the flow was recorded*.
+
+        This is the signal that matters. A capability still working only because
+        a lower tier caught it is one vendor release from not working, and
+        nobody finds out unless the comparison is made every run.
+        """
+        if self.tier_used is None or self.expected_tier is None:
+            return False
+        return self.tier_used > self.expected_tier
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -100,6 +113,8 @@ class StepReport:
             "action": self.action,
             "ok": self.ok,
             "tier_used": self.tier_used,
+            "expected_tier": self.expected_tier,
+            "drifted": self.drifted,
             "locator_kind": self.locator_kind,
             "ambiguous": self.ambiguous,
             "recovered": list(self.recovered),
@@ -179,6 +194,11 @@ class ReplayResult:
     def degraded_steps(self) -> list[str]:
         return [s.step_id for s in self.steps if s.degraded]
 
+    @property
+    def drifting_steps(self) -> list[str]:
+        """Steps that resolved worse than they did at record time."""
+        return [s.step_id for s in self.steps if s.drifted]
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "capability": self.capability,
@@ -192,5 +212,6 @@ class ReplayResult:
             "escalation": self.escalation,
             "locator_tiers": self.locator_tiers,
             "degraded_steps": self.degraded_steps,
+            "drifting_steps": self.drifting_steps,
             "steps": [s.to_dict() for s in self.steps],
         }

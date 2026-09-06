@@ -31,7 +31,8 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from replay.artifact import ArtifactNotFound, ArtifactStore, invocation_schema
+from replay.artifact import ArtifactNotFound, ArtifactStore, invocation_schema, specialise
+from replay.artifact.overrides import OverrideRejected
 from replay.artifact.schema import CapabilityArtifact
 from replay.engine import ReplayExecutor, ReplayStatus
 from replay.escalation import ConsoleEscalation, InterventionQueue
@@ -47,7 +48,11 @@ class InvokeRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     target: str | None = Field(
         default=None,
-        description="Run against this origin instead of the recorded one, e.g. another tenant.",
+        description="Run against this origin instead of the recorded one.",
+    )
+    tenant: str | None = Field(
+        default=None,
+        description="Apply this tenant's overrides. The capability's contract is unchanged.",
     )
     allow_risky: bool = False
     allow_irreversible: bool = False
@@ -138,9 +143,11 @@ def create_api(
     def invoke(name: str, request: InvokeRequest, version: str | None = None) -> JSONResponse:
         """Run a capability. This is the production path an agent triggers."""
         try:
-            artifact = store.load(name, version)
+            artifact = specialise(store.load(name, version), request.tenant)
         except ArtifactNotFound as missing:
             return JSONResponse({"error": str(missing)}, status_code=404)
+        except OverrideRejected as rejected:
+            return JSONResponse({"error": str(rejected)}, status_code=409)
 
         run_id = new_run_id("invoke")
         gate = RiskGate(

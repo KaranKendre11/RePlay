@@ -146,6 +146,10 @@ def run_capability(
         str | None,
         typer.Option("--target", "-t", help="Run against this origin instead of the recorded one."),
     ] = None,
+    tenant: Annotated[
+        str | None,
+        typer.Option("--tenant", help="Apply this tenant's overrides to the base capability."),
+    ] = None,
     headed: Annotated[bool, typer.Option("--headed", help="Show the browser window.")] = False,
     evidence_dir: Annotated[Path, typer.Option("--evidence-dir")] = Path("evidence"),
     policy_file: Annotated[Path, typer.Option("--policy", help="Allowlist file.")] = Path(
@@ -171,7 +175,7 @@ def run_capability(
 
     This is the path an AI agent triggers in production.
     """
-    from replay.artifact import ArtifactNotFound, ArtifactStore
+    from replay.artifact import ArtifactNotFound, ArtifactStore, specialise
     from replay.engine import ReplayExecutor
     from replay.escalation import ConsoleEscalation, InterventionQueue, serve_console
     from replay.evidence import EvidenceRecorder, new_run_id
@@ -187,7 +191,7 @@ def run_capability(
         arguments[key.strip()] = value
 
     try:
-        artifact = ArtifactStore().load(name, capability_version)
+        artifact = specialise(ArtifactStore().load(name, capability_version), tenant)
     except ArtifactNotFound as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from exc
@@ -203,7 +207,8 @@ def run_capability(
         typer.secho(f"operator console: http://127.0.0.1:{console_port}", fg=typer.colors.MAGENTA)
 
     run_id = new_run_id("replay")
-    typer.secho(f"run {run_id}  capability {artifact.ref}", fg=typer.colors.CYAN)
+    scope = f"  tenant {tenant}" if tenant else ""
+    typer.secho(f"run {run_id}  capability {artifact.ref}{scope}", fg=typer.colors.CYAN)
 
     with (
         EvidenceRecorder(run_id, root=evidence_dir) as recorder,
@@ -263,9 +268,14 @@ def _report(result) -> None:
         typer.echo(f"observed:  {result.failure.observed[:200]}")
 
     typer.echo(f"tiers:     {json.dumps(result.locator_tiers)}")
-    if result.degraded_steps:
+    if result.drifting_steps:
         typer.secho(
-            f"degraded:  {result.degraded_steps} resolved below tier 1",
+            f"DRIFT:     {result.drifting_steps} resolved worse than when recorded",
+            fg=typer.colors.RED,
+        )
+    elif result.degraded_steps:
+        typer.secho(
+            f"degraded:  {result.degraded_steps} resolved below tier 1, as recorded",
             fg=typer.colors.YELLOW,
         )
     if result.escalation:
