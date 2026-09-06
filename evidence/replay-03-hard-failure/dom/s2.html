@@ -1,0 +1,37 @@
+<!-- frame (main) :: http://127.0.0.1:8080/?inject=error500 -->
+<!DOCTYPE html><html><head>
+  <title>MERIDIAN CORE MSG0001</title>
+  <style>
+    body { font-family: "Courier New", monospace; font-size: 13px;
+           background: #d4d0c8; color: #000; margin: 0; padding: 8px; }
+    table { border-collapse: collapse; }
+    td, th { padding: 2px 6px; font-size: 13px; vertical-align: top; }
+    .hdr { background: #1a3a6b; color: #fff; font-weight: bold;
+           padding: 4px 8px; letter-spacing: 1px; }
+    .box { border: 2px inset #d4d0c8; background: #e8e6e0; padding: 6px; margin-top: 6px; }
+    input[type=text], input[type=password], select {
+      font-family: "Courier New", monospace; font-size: 13px; border: 2px inset #d4d0c8; }
+    input[type=submit] { font-family: "Courier New", monospace; font-size: 13px;
+      border: 2px outset #d4d0c8; background: #d4d0c8; padding: 1px 10px; }
+    .err { color: #a00; font-weight: bold; }
+    .sysmsg { background: #ffffcc; border: 1px solid #999; padding: 4px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+<div class="hdr">MERIDIAN CORE &nbsp;·&nbsp; MSG0001</div>
+
+<!--
+  One template for every non-success terminal state. The distinguishing signal
+  is the code text, which is what the artifact's outcome detectors match on.
+-->
+<div class="box">
+<table>
+  <tbody><tr><td colspan="2"><b>APPLICATION ERROR</b></td></tr>
+  <tr><td>Code</td><td><b>SYS-500</b></td></tr>
+  <tr><td>Detail</td><td class="err">Unhandled exception in transaction processor. Contact support.</td></tr>
+</tbody></table>
+</div>
+
+
+
+</body></html>

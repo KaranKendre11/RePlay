@@ -1,0 +1,14 @@
+{
+  "rendered": "MERIDIAN CORE  ·  MSG0001\nAPPLICATION ERROR\nCode\tSYS-500\nDetail\tUnhandled exception in transaction processor. Contact support.",
+  "url": "http://127.0.0.1:8080/?inject=error500",
+  "title": "MERIDIAN CORE MSG0001",
+  "http_status": 500,
+  "dialogs_seen": [],
+  "frames": [
+    {
+      "path": [],
+      "url": "http://127.0.0.1:8080/?inject=error500",
+      "aria": "- text: MERIDIAN CORE · MSG0001\n- table:\n  - rowgroup:\n    - row \"APPLICATION ERROR\":\n      - cell \"APPLICATION ERROR\"\n    - row \"Code SYS-500\":\n      - cell \"Code\"\n      - cell \"SYS-500\"\n    - row \"Detail Unhandled exception in transaction processor. Contact support.\":\n      - cell \"Detail\"\n      - cell \"Unhandled exception in transaction processor. Contact support.\""
+    }
+  ]
+}
