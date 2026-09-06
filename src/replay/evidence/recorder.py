@@ -44,7 +44,9 @@ class EvidenceRecorder:
             directory.mkdir(parents=True, exist_ok=True)
         self.redactor = Redactor(mask)
         self._log = (self.dir / "run.jsonl").open("a", encoding="utf-8")
-        self._transcript = (self.dir / "transcript.jsonl").open("a", encoding="utf-8")
+        # Opened on first use. Replay has no model, so a replay's evidence
+        # should not contain an empty transcript implying otherwise.
+        self._transcript: Any = None
 
     # -- redaction --------------------------------------------------------
 
@@ -70,6 +72,8 @@ class EvidenceRecorder:
         so a reviewer can check the distillation without the capability
         carrying the model's reasoning around forever.
         """
+        if self._transcript is None:
+            self._transcript = (self.dir / "transcript.jsonl").open("a", encoding="utf-8")
         record = self.redact(
             {"ts": datetime.now(UTC).isoformat(), "role": role, "content": content}
         )
@@ -106,7 +110,7 @@ class EvidenceRecorder:
 
     def close(self) -> None:
         for handle in (self._log, self._transcript):
-            if not handle.closed:
+            if handle is not None and not handle.closed:
                 handle.close()
 
     def __enter__(self) -> EvidenceRecorder:

@@ -1,0 +1,67 @@
+{
+  "capability": "«redacted»",
+  "run_id": "replay-02-business-outcome",
+  "status": "business_outcome",
+  "outputs": {},
+  "outcome": {
+    "code": "MEMBER_NOT_FOUND",
+    "message": "No member on file for the supplied ID.",
+    "detected_at_step": "s3"
+  },
+  "failure": null,
+  "duration_ms": 110,
+  "evidence_dir": "evidence/replay-02-business-outcome",
+  "escalation": null,
+  "locator_tiers": {
+    "s2": 3,
+    "s3": 1
+  },
+  "degraded_steps": [
+    "s2"
+  ],
+  "drifting_steps": [],
+  "steps": [
+    {
+      "step_id": "s1",
+      "intent": "Open the target application.",
+      "action": "navigate",
+      "ok": true,
+      "tier_used": null,
+      "expected_tier": null,
+      "drifted": false,
+      "locator_kind": null,
+      "ambiguous": false,
+      "recovered": [],
+      "duration_ms": 13,
+      "error": null
+    },
+    {
+      "step_id": "s2",
+      "intent": "Enter the member id field.",
+      "action": "type",
+      "ok": true,
+      "tier_used": 3,
+      "expected_tier": 3,
+      "drifted": false,
+      "locator_kind": "label_adjacent",
+      "ambiguous": false,
+      "recovered": [],
+      "duration_ms": 6,
+      "error": null
+    },
+    {
+      "step_id": "s3",
+      "intent": "Click Search.",
+      "action": "click",
+      "ok": true,
+      "tier_used": 1,
+      "expected_tier": 1,
+      "drifted": false,
+      "locator_kind": "role_name",
+      "ambiguous": false,
+      "recovered": [],
+      "duration_ms": 42,
+      "error": null
+    }
+  ]
+}

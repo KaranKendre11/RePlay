@@ -169,6 +169,10 @@ def run_capability(
         bool,
         typer.Option("--escalate", help="Open the operator console and route blocks to a human."),
     ] = False,
+    label: Annotated[
+        str | None,
+        typer.Option("--label", help="Name this run's evidence directory, instead of a timestamp."),
+    ] = None,
     console_port: Annotated[int, typer.Option("--console-port")] = 8765,
 ) -> None:
     """Replay a saved capability. No model is involved.
@@ -206,7 +210,7 @@ def run_capability(
         handler = ConsoleEscalation(queue)
         typer.secho(f"operator console: http://127.0.0.1:{console_port}", fg=typer.colors.MAGENTA)
 
-    run_id = new_run_id("replay")
+    run_id = f"replay-{label}" if label else new_run_id("replay")
     scope = f"  tenant {tenant}" if tenant else ""
     typer.secho(f"run {run_id}  capability {artifact.ref}{scope}", fg=typer.colors.CYAN)
 
@@ -266,6 +270,14 @@ def _report(result) -> None:
         typer.echo(f"failed at: {result.failure.step_id} ({result.failure.failure_class.value})")
         typer.echo(f"expected:  {result.failure.expected}")
         typer.echo(f"observed:  {result.failure.observed[:200]}")
+
+    recovered = [s for s in result.steps if s.recovered]
+    if recovered:
+        for step in recovered:
+            typer.secho(
+                f"recovered: {step.step_id} — {', '.join(step.recovered)}",
+                fg=typer.colors.YELLOW,
+            )
 
     typer.echo(f"tiers:     {json.dumps(result.locator_tiers)}")
     if result.drifting_steps:

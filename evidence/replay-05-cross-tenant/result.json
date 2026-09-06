@@ -1,0 +1,81 @@
+{
+  "capability": "«redacted»",
+  "run_id": "replay-05-cross-tenant",
+  "status": "success",
+  "outputs": {
+    "current_savings_balance": "4,211.03"
+  },
+  "outcome": null,
+  "failure": null,
+  "duration_ms": 130,
+  "evidence_dir": "evidence/replay-05-cross-tenant",
+  "escalation": null,
+  "locator_tiers": {
+    "s2": 3,
+    "s3": 1,
+    "s4": 4
+  },
+  "degraded_steps": [
+    "s2",
+    "s4"
+  ],
+  "drifting_steps": [],
+  "steps": [
+    {
+      "step_id": "s1",
+      "intent": "Open the target application.",
+      "action": "navigate",
+      "ok": true,
+      "tier_used": null,
+      "expected_tier": null,
+      "drifted": false,
+      "locator_kind": null,
+      "ambiguous": false,
+      "recovered": [],
+      "duration_ms": 12,
+      "error": null
+    },
+    {
+      "step_id": "s2",
+      "intent": "Enter the member id field.",
+      "action": "type",
+      "ok": true,
+      "tier_used": 3,
+      "expected_tier": 3,
+      "drifted": false,
+      "locator_kind": "label_adjacent",
+      "ambiguous": false,
+      "recovered": [],
+      "duration_ms": 7,
+      "error": null
+    },
+    {
+      "step_id": "s3",
+      "intent": "Click Search.",
+      "action": "click",
+      "ok": true,
+      "tier_used": 1,
+      "expected_tier": 1,
+      "drifted": false,
+      "locator_kind": "role_name",
+      "ambiguous": false,
+      "recovered": [],
+      "duration_ms": 42,
+      "error": null
+    },
+    {
+      "step_id": "s4",
+      "intent": "Read savings value as output 'current_savings_balance'.",
+      "action": "read",
+      "ok": true,
+      "tier_used": 4,
+      "expected_tier": 4,
+      "drifted": false,
+      "locator_kind": "anchored_text",
+      "ambiguous": false,
+      "recovered": [],
+      "duration_ms": 0,
+      "error": null
+    }
+  ]
+}
