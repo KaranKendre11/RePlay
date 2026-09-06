@@ -114,6 +114,15 @@ relationships, all of which a desktop accessibility API supplies. The two web-sp
 honest limit is coordinates: recorded as tier 6, never exercised, and the tier that would matter
 most on a screenshot-only surface.
 
+**Nothing in the engine knows which product it is driving.** Product knowledge — the screen text
+meaning a session expired or the application fell over, the business outcomes a capability can
+legitimately reach, the interstitials worth recovering from — is declared per product and carried
+by the artifact. None of it is held in the engine, because every vendor spells these differently:
+an engine carrying one product's error codes classifies correctly against that product and
+silently stops classifying against all the others. A product that declares nothing gets no
+reclassification, which is honest degradation rather than confident mislabelling. A test strips
+the declaration and asserts the answer changes, so the strings cannot creep back.
+
 **Multi-tenant.** A capability is recorded once and *specialised* per tenant by a thin override
 layer. An override may change the entry point, a target, a checkpoint, an outcome detector. It may
 **not** change steps, inputs or outputs — those are the contract, and letting an override alter

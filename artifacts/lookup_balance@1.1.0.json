@@ -7,7 +7,15 @@
   "app": {
     "product": "MERIDIAN CORE",
     "surface": "legacy_web",
-    "entry_url_pattern": "http://127.0.0.1:8080/"
+    "entry_url_pattern": "http://127.0.0.1:8080/",
+    "session_lost_markers": [
+      "SESSION EXPIRED",
+      "SEC-0031"
+    ],
+    "application_error_markers": [
+      "APPLICATION ERROR",
+      "SYS-500"
+    ]
   },
   "inputs": [
     {

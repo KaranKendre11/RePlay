@@ -1,0 +1,48 @@
+# MERIDIAN CORE — the product knowledge a single happy-path run cannot discover.
+#
+# Discovery watches one successful run. That run never meets a "no such member"
+# screen, never times out, and never sees the maintenance interstitial, so
+# synthesis refuses to invent any of them. They are declared here instead, at
+# review, and attached to the capability when the run is distilled.
+#
+# This file lives beside the application it describes rather than inside the
+# engine. Every vendor spells these differently; an engine holding one product's
+# error strings would classify correctly against that product and silently stop
+# classifying against all the others.
+#
+#     uv run replay discover ... --profile targets/meridian/review.toml
+#
+# Without a profile a capability is still synthesised — it just declares no
+# outcomes, which `Synthesis.needs_outcomes` flags for exactly this reason.
+
+product = "MERIDIAN CORE"
+
+# Screen text that outranks whatever step was running. A session timeout
+# reported as "the checkpoint did not match" sends someone hunting for a
+# drifted locator when the truth is that we were logged out.
+session_lost_markers = ["SESSION EXPIRED", "SEC-0031"]
+application_error_markers = ["APPLICATION ERROR", "SYS-500"]
+
+# Legitimate answers the caller must handle. Not failures.
+[[outcome]]
+code = "MEMBER_NOT_FOUND"
+text = "MEMBER_NOT_FOUND"
+message = "No member on file for the supplied ID."
+
+[[outcome]]
+code = "PERMISSION_DENIED"
+text = "PERMISSION_DENIED"
+message = "Teller authority is insufficient."
+
+[[outcome]]
+code = "VALIDATION_REJECTED"
+text = "VALIDATION_REJECTED"
+message = "The application rejected the submitted values."
+
+# Known, dismissible screens that stand between the flow and the goal. Bounded,
+# and recorded every time one fires — "recovered silently" and "never happened"
+# must not look the same in the evidence afterwards.
+[[recovery]]
+when_text = "SYSTEM NOTICE"
+link_name = "Acknowledge and Continue"
+frame_path = ["workframe"]
