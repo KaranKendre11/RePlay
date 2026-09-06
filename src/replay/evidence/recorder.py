@@ -17,7 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-REDACTED = "«redacted»"
+from replay.policy.redaction import Redactor
+
 DEFAULT_ROOT = Path("evidence")
 
 
@@ -41,7 +42,7 @@ class EvidenceRecorder:
         self.obs_dir = self.dir / "observations"
         for directory in (self.dir, self.steps_dir, self.obs_dir):
             directory.mkdir(parents=True, exist_ok=True)
-        self._mask = [m for m in mask if m]
+        self.redactor = Redactor(mask)
         self._log = (self.dir / "run.jsonl").open("a", encoding="utf-8")
         self._transcript = (self.dir / "transcript.jsonl").open("a", encoding="utf-8")
 
@@ -49,14 +50,11 @@ class EvidenceRecorder:
 
     def add_mask(self, value: str | None) -> None:
         """Register a value that must never appear in evidence."""
-        if value:
-            self._mask.append(value)
+        self.redactor.add(value)
 
     def redact(self, payload: Any) -> Any:
         text = json.dumps(payload, ensure_ascii=False, default=str)
-        for secret in self._mask:
-            text = text.replace(secret, REDACTED)
-        return json.loads(text)
+        return json.loads(self.redactor.scrub(text))
 
     # -- writing ----------------------------------------------------------
 
@@ -98,9 +96,7 @@ class EvidenceRecorder:
         """Store a richer failure signal, e.g. a DOM dump."""
         path = self.dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        for secret in self._mask:
-            text = text.replace(secret, REDACTED)
-        path.write_text(text, encoding="utf-8")
+        path.write_text(self.redactor.scrub(text), encoding="utf-8")
         return str(path.relative_to(self.dir))
 
     def result(self, payload: dict[str, Any]) -> Path:

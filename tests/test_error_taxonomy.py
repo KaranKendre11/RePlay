@@ -15,8 +15,10 @@ than asserted.
 import pytest
 
 from replay.artifact import ArtifactStore
+from replay.artifact.schema import ApprovalState
 from replay.engine import FailureClass, ReplayExecutor, ReplayStatus
 from replay.evidence import EvidenceRecorder
+from replay.policy import Allowlist, RiskGate
 from replay.surface import WebSurface
 from targets.meridian.inject import EXPECTED_CLASSIFICATION, Expected, Injection
 
@@ -50,8 +52,16 @@ def replay(server: str, tmp_path, injection: Injection | None, run_id: str, capa
     artifact = ArtifactStore("artifacts").load(capability)
     target = f"{server}/?inject={injection.value}" if injection else server
 
+    # The write capability is irreversible and unapproved, so the guardrails
+    # block it by default (M8). Testing the error taxonomy means opting in
+    # explicitly — which is itself the intended workflow, not a workaround.
+    gate = RiskGate(allow_risky=True, allow_irreversible=True)
+    if artifact.policy.requires_approval:
+        artifact = artifact.model_copy(deep=True)
+        artifact.reliability.approval = ApprovalState.APPROVED
+
     with (
-        WebSurface() as surface,
+        WebSurface(allowlist=Allowlist.permissive("127.0.0.1:*", "localhost:*")) as surface,
         EvidenceRecorder(run_id, root=tmp_path) as recorder,
     ):
         return ReplayExecutor(
@@ -60,6 +70,7 @@ def replay(server: str, tmp_path, injection: Injection | None, run_id: str, capa
             recorder=recorder,
             base_url=target,
             step_timeout_ms=TIMEOUT_FOR.get(injection, TEST_TIMEOUT_MS),
+            gate=gate,
         ).run(arguments)
 
 

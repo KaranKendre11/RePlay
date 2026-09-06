@@ -48,6 +48,7 @@ from replay.engine.result import (
     StepReport,
 )
 from replay.evidence import EvidenceRecorder, new_run_id
+from replay.policy import PolicyRefused, RiskGate
 from replay.surface.base import (
     ControlNotHeld,
     DialogPolicy,
@@ -151,6 +152,7 @@ class ReplayExecutor:
         recorder: EvidenceRecorder | None = None,
         step_timeout_ms: int = 10_000,
         base_url: str | None = None,
+        gate: RiskGate | None = None,
     ) -> None:
         self.surface = surface
         self.artifact = artifact
@@ -163,6 +165,8 @@ class ReplayExecutor:
         self.recorder = recorder or EvidenceRecorder(new_run_id("replay"))
         self._reads: dict[str, str] = {}
         self._captures = 0
+        # Default-deny: without an explicit gate, only safe capabilities run.
+        self.gate = gate or RiskGate()
 
     # -- entry point ------------------------------------------------------
 
@@ -187,16 +191,49 @@ class ReplayExecutor:
             self._finish(result, started)
             return result
 
-        # Sensitive values are masked before anything can write them.
+        # Sensitive values are masked before anything can write them, and the
+        # controls holding them are covered before any screenshot is taken.
+        cover = getattr(self.surface, "mask_in_screenshots", None)
         for spec in self.artifact.inputs:
-            if spec.sensitive and spec.name in bound:
+            if not spec.sensitive:
+                continue
+            if spec.name in bound:
                 self.recorder.add_mask(bound[spec.name])
+            if cover is not None:
+                for step in self.artifact.steps:
+                    if (
+                        isinstance(step.value, ParamRef)
+                        and step.value.param == spec.name
+                        and step.target is not None
+                    ):
+                        cover(step.target)
+
+        try:
+            self.gate.check_capability(self.artifact)
+        except PolicyRefused as refusal:
+            # Refused before a browser opens, so a blocked run costs nothing
+            # and — more importantly — leaves the application untouched.
+            result.failure = Failure(
+                step_id="-",
+                failure_class=FailureClass.POLICY_REFUSED,
+                expected=f"policy permitting {self.artifact.ref}",
+                observed=str(refusal),
+            )
+            self.recorder.event("policy_refused", scope="capability", reason=str(refusal))
+            self._finish(result, started)
+            return result
 
         self.recorder.event(
             "replay_started",
             capability=self.artifact.ref,
             arguments=bound,
             approval=self.artifact.reliability.approval.value,
+            gate=self.gate.describe(),
+            allowlist=(
+                self.surface.allowlist.describe()
+                if getattr(self.surface, "allowlist", None) is not None
+                else None
+            ),
         )
 
         try:
@@ -223,6 +260,19 @@ class ReplayExecutor:
 
     def _execute(self, result: ReplayResult, bound: dict[str, str]) -> None:
         for index, step in enumerate(self.artifact.steps, start=1):
+            try:
+                self.gate.check_step(step)
+            except PolicyRefused as refusal:
+                result.failure = Failure(
+                    step_id=step.id,
+                    failure_class=FailureClass.POLICY_REFUSED,
+                    expected=f"policy permitting a {step.risk.value} step",
+                    observed=str(refusal),
+                    evidence=self._capture(step.id),
+                )
+                self.recorder.event("policy_refused", scope="step", step_id=step.id)
+                return
+
             report = self._perform(step, bound, index)
             result.steps.append(report)
 
@@ -366,7 +416,10 @@ class ReplayExecutor:
         error = report.error or ""
         observed = self._observed()
 
-        failure_class = self._classify_screen(observed)
+        if "refused" in error:
+            failure_class = FailureClass.POLICY_REFUSED
+        else:
+            failure_class = self._classify_screen(observed)
         if failure_class is None:
             failure_class = (
                 FailureClass.TARGET_NOT_FOUND

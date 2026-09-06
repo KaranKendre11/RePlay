@@ -1,0 +1,21 @@
+# Guardrails for the automation.
+#
+# An empty domain list permits nothing. The failure mode of a missing or
+# malformed policy should be a refusal, never free rein.
+
+[allowlist]
+# Hosts the automation may navigate to. Glob patterns against host:port.
+domains = ["127.0.0.1:8080", "127.0.0.1:8081", "localhost:8080", "localhost:8081"]
+
+# Paths it may reach within those hosts.
+routes = ["/", "/search", "/nav", "/member/*", "/member", "/reset"]
+
+# Deny beats allow. These exist because a broader rule above was too generous.
+denied_routes = ["/admin/*", "/transfer/*", "/wire/*"]
+
+# Action types permitted at all. Anything absent here is refused at the point
+# of action, regardless of what an artifact asks for.
+actions = [
+  "click", "type", "select", "navigate", "press", "read", "wait",
+  "accept_dialog", "dismiss_dialog",
+]

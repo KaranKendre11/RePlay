@@ -148,6 +148,19 @@ def run_capability(
     ] = None,
     headed: Annotated[bool, typer.Option("--headed", help="Show the browser window.")] = False,
     evidence_dir: Annotated[Path, typer.Option("--evidence-dir")] = Path("evidence"),
+    policy_file: Annotated[Path, typer.Option("--policy", help="Allowlist file.")] = Path(
+        "policy.toml"
+    ),
+    allow_risky: Annotated[
+        bool, typer.Option("--allow-risky", help="Permit steps that change state.")
+    ] = False,
+    allow_irreversible: Annotated[
+        bool,
+        typer.Option(
+            "--allow-irreversible",
+            help="Permit irreversible steps. Blocked by default; prefer human escalation.",
+        ),
+    ] = False,
 ) -> None:
     """Replay a saved capability. No model is involved.
 
@@ -156,6 +169,7 @@ def run_capability(
     from replay.artifact import ArtifactNotFound, ArtifactStore
     from replay.engine import ReplayExecutor
     from replay.evidence import EvidenceRecorder, new_run_id
+    from replay.policy import RiskGate
     from replay.surface import WebSurface
 
     arguments: dict[str, str] = {}
@@ -172,19 +186,40 @@ def run_capability(
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from exc
 
+    allowlist = _load_allowlist(policy_file)
+    gate = RiskGate(allow_risky=allow_risky, allow_irreversible=allow_irreversible)
+
     run_id = new_run_id("replay")
     typer.secho(f"run {run_id}  capability {artifact.ref}", fg=typer.colors.CYAN)
 
     with (
         EvidenceRecorder(run_id, root=evidence_dir) as recorder,
-        WebSurface(headed=headed) as surface,
+        WebSurface(headed=headed, allowlist=allowlist) as surface,
     ):
-        result = ReplayExecutor(surface, artifact, recorder=recorder, base_url=target).run(
-            arguments
-        )
+        result = ReplayExecutor(
+            surface, artifact, recorder=recorder, base_url=target, gate=gate
+        ).run(arguments)
 
     _report(result)
     raise typer.Exit(code=0 if result.ok else 1)
+
+
+def _load_allowlist(path: Path):
+    """Load the allowlist, refusing to run without one.
+
+    A missing policy file must not mean "permit everything". The failure mode
+    of a misconfiguration should be a refusal.
+    """
+    from replay.policy import Allowlist
+
+    if not path.exists():
+        typer.secho(
+            f"no policy file at {path}; refusing to run without an allowlist",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return Allowlist.from_file(path)
 
 
 def _report(result) -> None:
