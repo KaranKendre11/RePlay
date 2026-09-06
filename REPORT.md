@@ -213,8 +213,8 @@ rather than guessing at column arithmetic.
    load-bearing architectural claim here and the one thing reasoned rather than demonstrated.
 4. **Shared sub-flows.** Both capabilities duplicate a search prefix.
 
-**One thing I got wrong.** The first real `gpt-5` run offered `"4,211.03"` — the balance itself — as
-proof of success. True for member 12345, false for everyone else; a capability asserting it would
-pass once and fail forever. Synthesis now substitutes stable screen text, records why, and refuses
-outright when none exists. The model cannot easily see this; the loop can, because it knows which
+**One thing I got wrong.** A real `gpt-5` run offered `"4,211.03"` — the balance itself — as proof
+of success (`evidence/discovery-20260906T091017Z`). True for member 12345, false for everyone else;
+a capability asserting it would pass once and fail forever. Synthesis now substitutes stable screen
+text, records why, and refuses outright when none exists. The model cannot easily see this; the loop can, because it knows which
 values were parameters and which were outputs.

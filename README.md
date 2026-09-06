@@ -181,7 +181,7 @@ targets/meridian/   the hostile legacy app, and a second tenant's variant
   review.toml       product knowledge a happy-path run cannot discover
 artifacts/          saved capabilities (JSON, reviewable, diffable)
 overrides/          per-tenant deltas
-evidence/           committed runs — two real gpt-5 discoveries, six replays
+evidence/           committed runs — three real gpt-5 discoveries, six replays
 policy.toml         the guardrails
 ```
 
@@ -192,6 +192,7 @@ Committed, from real runs, not reconstructed.
 | Directory | What it shows |
 |---|---|
 | `discovery-20260906T085541Z` | **Real gpt-5 run** — the read flow, 4 actions |
+| `discovery-20260906T091017Z` | **Real gpt-5 run** — the model proposed a checkpoint that only held for one member; the loop caught it |
 | `discovery-20260906T211130Z` | **Real gpt-5 run** — the write flow, 9 actions, irreversible |
 | `replay-01-success` | Deterministic replay with typed outputs |
 | `replay-02-business-outcome` | `MEMBER_NOT_FOUND` returned as a result |
