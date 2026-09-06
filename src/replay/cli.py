@@ -282,6 +282,69 @@ def _report(result) -> None:
 
 
 @app.command()
+def capabilities(
+    name: Annotated[str | None, typer.Argument(help="Show one capability in detail.")] = None,
+) -> None:
+    """List the saved capabilities, or show one.
+
+    The same view an agent gets from GET /capabilities — derived from the
+    artifacts directory, so there is no registry that can disagree with it.
+    """
+    from replay.api import summarise
+    from replay.artifact import ArtifactNotFound, ArtifactStore
+
+    store = ArtifactStore()
+
+    if name:
+        try:
+            typer.echo(json.dumps(summarise(store.load(name)), indent=2))
+        except ArtifactNotFound as missing:
+            typer.secho(str(missing), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2) from missing
+        return
+
+    found = store.list_all()
+    if not found:
+        typer.secho("no capabilities saved yet", fg=typer.colors.YELLOW)
+        return
+
+    for artifact in found:
+        risk = artifact.max_step_risk.value
+        colour = typer.colors.RED if risk == "irreversible" else typer.colors.GREEN
+        typer.secho(f"{artifact.ref}", fg=typer.colors.CYAN, nl=False)
+        typer.echo(f"  {artifact.title}")
+        typer.secho(f"    risk={risk}", fg=colour, nl=False)
+        typer.echo(
+            f"  approval={artifact.reliability.approval.value}"
+            f"  args=[{', '.join(p.name for p in artifact.inputs)}]"
+            f"  returns=[{', '.join(o.name for o in artifact.outputs)}]"
+        )
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port")] = 8000,
+    policy_file: Annotated[Path, typer.Option("--policy")] = Path("policy.toml"),
+    headed: Annotated[
+        bool, typer.Option("--headed", help="Show the browser, so an operator can take over.")
+    ] = False,
+) -> None:
+    """Serve the capability catalog and the operator console.
+
+    Catalog at /capabilities, console at /operator. One process: a
+    single-operator handoff needs no more, and the brief is explicit that
+    building scaling infrastructure is not rewarded.
+    """
+    from replay.api import serve as run_server
+
+    _load_allowlist(policy_file)
+    typer.secho(f"catalog:  http://{host}:{port}/capabilities", fg=typer.colors.CYAN)
+    typer.secho(f"operator: http://{host}:{port}/operator", fg=typer.colors.MAGENTA)
+    run_server(host=host, port=port, policy_file=policy_file, headed=headed)
+
+
+@app.command()
 def synthesize(
     evidence_dir: Annotated[Path, typer.Argument(help="A discovery run's evidence directory.")],
     name: Annotated[str, typer.Option("--name", "-n", help="Capability name.")],
