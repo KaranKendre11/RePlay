@@ -6,6 +6,8 @@ frame traversal, tier fallback, frame-scoped navigation, dialog policy — is a
 claim about a real browser's behaviour.
 """
 
+import inspect
+
 import pytest
 
 from replay.artifact import ArtifactStore
@@ -34,6 +36,7 @@ from replay.surface import (
     TargetNotFound,
     WebSurface,
 )
+from replay.surface.base import Surface
 from replay.surface.web import xpath_literal
 
 WORK = ["workframe"]
@@ -270,6 +273,47 @@ def test_http_status_distinguishes_a_server_error_from_a_blank_page(surface, mer
     surface.act(Action.NAVIGATE, value=f"{meridian_server}/member?f7=12345&inject=error500")
     assert surface.evaluate(HttpStatusIs(status=500))
     assert not surface.evaluate(HttpStatusIs(status=200))
+
+
+# ---------- the protocol ----------
+
+
+def test_the_protocol_describes_the_implementation_it_is_a_specification_for():
+    """Whoever writes the second Surface gets the protocol, and nothing else.
+
+    ``reacquire_control`` declared ``-> None`` while ``WebSurface`` returned the
+    record of what the operator did during a handoff — which the engine reads,
+    and which "record what the human did" (PRD §3.6) depends on entirely.
+    Someone implementing a desktop Surface from the protocol would have
+    returned ``None``, correctly, and silently lost that record. Nothing would
+    have failed; the evidence would just have been wrong.
+
+    So every method is checked at once rather than reviewed: reading is how the
+    mismatch was found, and reading does not scale.
+    """
+    for name, declared in vars(Surface).items():
+        if not inspect.isfunction(declared) or name.startswith("_"):
+            continue
+        implemented = getattr(WebSurface, name)
+        assert inspect.signature(declared) == inspect.signature(implemented), (
+            f"Surface.{name} declares {inspect.signature(declared)} but WebSurface "
+            f"implements {inspect.signature(implemented)}"
+        )
+
+
+def test_the_handoff_record_comes_back_and_is_then_drained(surface):
+    """The returned list is the only channel carrying what the operator touched.
+
+    Drained on the way out, so a second handoff reports its own actions rather
+    than writing the first one's into the evidence a second time.
+    """
+    surface.release_control()
+    surface.frame_for(WORK).get_by_role("textbox").first.click()
+    performed = surface.reacquire_control()
+
+    assert [a["kind"] for a in performed] == ["click"]
+    assert performed[0]["label"], "the control is named — never the value typed into it"
+    assert surface.reacquire_control() == [], "the buffer does not repeat itself"
 
 
 # ---------- control transfer ----------

@@ -203,6 +203,16 @@ class Surface(Protocol):
     Small on purpose. A protocol this size can plausibly be implemented for a
     desktop accessibility API; one that leaked selectors, cookies or page
     objects could not.
+
+    Layers above also *look* for four things beyond this protocol, and degrade
+    quietly rather than failing when they are absent — so a second surface that
+    omits them will work, and will be worse in ways nothing reports:
+    ``text_of`` (without it a failure carries no screen text, and the engine
+    stops being able to tell a 500 from a drifted locator), ``html_of`` (no DOM
+    dump in the failure evidence), ``mask_in_screenshots`` (sensitive controls
+    are photographed), and ``allowlist`` (no navigation guardrail). They are
+    optional because a terminal has no DOM to dump, not because they are
+    unimportant.
     """
 
     def observe(self, *, screenshot: bool = True) -> Observation:
@@ -229,7 +239,30 @@ class Surface(Protocol):
     def release_control(self) -> None:
         """Hand the live session to a human. Automation must stop acting."""
 
-    def reacquire_control(self) -> None:
-        """Take the session back."""
+    def reacquire_control(self) -> list[dict[str, str]]:
+        """Take the session back, and report what the human did with it.
+
+        The return value is part of the contract, not a convenience. Recording
+        what the operator did during a handoff is a requirement (PRD §3.6) and
+        this is the only channel that carries it — an implementation returning
+        nothing is asserting the operator touched nothing, and the evidence
+        will say so with nothing having failed.
+
+        Each entry describes one interaction and carries exactly two keys:
+
+        ``kind``
+            What was done: ``click``, ``change`` or ``press_enter``.
+        ``label``
+            Which control, named the way a person would name it — "Member ID
+            field", "Search".
+
+        Controls, never contents. An operator resolving an escalation on a bank
+        screen is very often typing exactly the data this system must not
+        persist, so a field is described by what it is and never by what was
+        put into it.
+
+        Empty if the operator did nothing observable. The buffer is cleared, so
+        a later call reports the next handoff rather than this one again.
+        """
 
     def close(self) -> None: ...

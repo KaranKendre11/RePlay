@@ -176,7 +176,11 @@ class WebSurface:
             self.page.bring_to_front()
 
     def reacquire_control(self) -> list[dict[str, str]]:
-        """Take the session back, and return what the operator did with it."""
+        """Take the session back, and return what the operator did with it.
+
+        ``{"kind", "label"}`` per interaction, as :class:`Surface` specifies.
+        The buffer is drained on the way out, so the next handoff starts empty.
+        """
         self._controller = Controller.AUTOMATION
         recorded = list(self._human_actions)
         self._human_actions = []

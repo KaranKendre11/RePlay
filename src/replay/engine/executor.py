@@ -538,7 +538,7 @@ class ReplayExecutor:
         try:
             resolved = self.escalation.escalate(request)
         finally:
-            performed = self.surface.reacquire_control() or []
+            performed = self.surface.reacquire_control()
             self.recorder.event("control_transferred", to="automation", request_id=request.id)
 
         actions = [
