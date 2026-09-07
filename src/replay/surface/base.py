@@ -19,17 +19,19 @@ accessible name and now resolves by raw XPath still works, but it has drifted,
 and drift you cannot see is drift you cannot manage.
 
 **Optional capabilities are declared, not discovered.** Not every surface can
-do everything: a terminal has no markup to dump, and a surface that cannot
-photograph a screen has nothing to cover before it does. Those two live in
-their own protocols — :class:`DumpsMarkup` and :class:`MasksScreenshots` —
-which a surface opts into by implementing them, and whose absence the engine
-states in the run log along with what it costs. The alternative, a caller
-reaching for a method with ``getattr`` and shrugging when it is not there,
-makes the optionality accidental rather than explicit: it is invisible to
-whoever writes the next surface, and it degrades in silence. Everything else is
-required, ``text_of`` most of all, because the error taxonomy is built on screen
-text and a surface that could not report it would report every session timeout
-as a missed checkpoint.
+do everything: a terminal has no markup to dump, a surface that cannot
+photograph a screen has nothing to cover before it does, and a surface written
+only to replay a recorded flow never has to enumerate what is on screen for a
+model to choose from. Those three live in their own protocols —
+:class:`DumpsMarkup`, :class:`MasksScreenshots` and :class:`Enumerates` — which
+a surface opts into by implementing them, and whose absence the engine states
+in the run log along with what it costs. The alternative, a caller reaching for
+a method with ``getattr`` and shrugging when it is not there, makes the
+optionality accidental rather than explicit: it is invisible to whoever writes
+the next surface, and it degrades in silence. Everything else is required,
+``text_of`` most of all, because the error taxonomy is built on screen text and
+a surface that could not report it would report every session timeout as a
+missed checkpoint.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from replay.artifact.conditions import Condition
 from replay.artifact.locators import Tier
 from replay.artifact.schema import Action, TargetSpec
 from replay.policy.allowlist import Allowlist
+from replay.surface.inventory import Candidate
 
 
 class SurfaceError(RuntimeError):
@@ -221,11 +224,11 @@ class Surface(Protocol):
     This is the required core, and it is the whole brief: an object that
     satisfies it can be handed to the replay engine and gets every guarantee
     the engine advertises, with nothing waiting to be discovered at run time.
-    Two further things a surface *may* be able to do are declared separately,
-    as :class:`DumpsMarkup` and :class:`MasksScreenshots`, and are opted into
-    by implementing them.
+    Three further things a surface *may* be able to do are declared
+    separately, as :class:`DumpsMarkup`, :class:`MasksScreenshots` and
+    :class:`Enumerates`, and are opted into by implementing them.
 
-    ``text_of`` is in here rather than beside those two because the error
+    ``text_of`` is in here rather than beside those three because the error
     taxonomy runs on it. Screen text is how a session timeout and an
     application 500 are told apart from a drifted locator; a surface that could
     not report it would report all three as a missed checkpoint, which is the
@@ -346,6 +349,38 @@ class MasksScreenshots(Protocol):
         """Cover this control in every screenshot this surface takes from now on."""
 
 
+@runtime_checkable
+class Enumerates(Protocol):
+    """Optional: this surface can list what is on screen as indexed candidates.
+
+    This is the whole method of discovery — the surface enumerates, the model
+    picks an index, and the ladder attached to that candidate was computed from
+    the live accessibility tree rather than guessed at by a model that cannot
+    see the markup. Replay never asks: it has the ladders already, in the
+    artifact. So a surface written only to replay recorded flows is a
+    legitimate thing to build and this stays optional, while a caller that
+    means to *discover* against one refuses a surface without it when it is
+    wired up rather than at the first observation.
+    """
+
+    def inventory(self) -> list[Candidate]:
+        """Everything on this screen a model could act on, each with an index.
+
+        Candidates carry a locator ladder and no markup. The model chooses
+        which control; the surface decides how to name it durably.
+        """
+
+
+@runtime_checkable
+class DiscoverableSurface(Surface, Enumerates, Protocol):
+    """The core plus enumeration: what discovery needs and replay does not.
+
+    Written as one protocol because Python has no intersection type, and worth
+    naming because it is the brief for a surface someone wants to record new
+    capabilities against rather than merely replay them on.
+    """
+
+
 @dataclass(frozen=True)
 class OptionalCapability:
     """One thing a surface may not be able to do, and what is lost when it cannot.
@@ -363,10 +398,37 @@ class OptionalCapability:
     def offered_by(self, surface: object) -> bool:
         return isinstance(surface, self.protocol)
 
+    def require(self, surface: object) -> None:
+        """Refuse a surface lacking this capability, for a caller that needs it.
+
+        Optional is a claim about the replay engine, which does without every
+        one of these and says so in the log. It is not a claim about every
+        caller: discovery is "enumerate, let the model pick an index, act" and
+        nothing else, so ``inventory`` is as load-bearing there as ``text_of``
+        is for the error taxonomy. A caller in that position refuses when it is
+        wired up, rather than raising ``AttributeError`` at the first step that
+        would have used the method.
+        """
+        if not self.offered_by(surface):
+            raise IncompleteSurface(surface, [self.name], consequence=self.consequence)
+
+
+#: Enumeration, bound to a name because the discovery loop has to point at it:
+#: this is the one optional capability that some caller above treats as
+#: mandatory, and it says so with :meth:`OptionalCapability.require`.
+ENUMERATION = OptionalCapability(
+    name="inventory",
+    protocol=Enumerates,
+    consequence=(
+        "nothing can be discovered against this surface, because a model has no "
+        "enumerated candidates to point at: capabilities can be replayed here but "
+        "never recorded here"
+    ),
+)
 
 #: Everything above the core that the replay engine will use when it is offered
 #: and do without when it is not. Iterated rather than checked one at a time, so
-#: a third entry added here is reported without the engine learning its name.
+#: a fourth entry added here is reported without the engine learning its name.
 OPTIONAL_CAPABILITIES: tuple[OptionalCapability, ...] = (
     OptionalCapability(
         name="html_of",
@@ -384,19 +446,32 @@ OPTIONAL_CAPABILITIES: tuple[OptionalCapability, ...] = (
             "taken, and a screenshot is pixels the redactor cannot scrub afterwards"
         ),
     ),
+    ENUMERATION,
 )
 
 
 class IncompleteSurface(TypeError):
-    """Something offered as a :class:`Surface` does not implement the core.
+    """Something offered as a surface cannot do what its caller requires of it.
 
     A ``TypeError`` rather than a :class:`SurfaceError`, because nothing went
-    wrong while driving a surface — the object never was one. That is a wiring
-    mistake and it should be paid for where it was wired.
+    wrong while driving a surface — the object never was one this caller could
+    use. That is a wiring mistake and it should be paid for where it was wired.
     """
 
-    def __init__(self, surface: object, missing: list[str]) -> None:
+    def __init__(
+        self, surface: object, missing: list[str], *, consequence: str | None = None
+    ) -> None:
         self.missing = missing
+        if consequence is not None:
+            # An optional capability that this particular caller cannot do
+            # without. Repeating the core/optional split here would mislead —
+            # what is missing really is optional, for everyone except whoever
+            # is refusing — so the message names the cost instead.
+            super().__init__(
+                f"{type(surface).__name__} does not implement {', '.join(missing)}, and "
+                f"without it {consequence}"
+            )
+            return
         optional = ", ".join(capability.name for capability in OPTIONAL_CAPABILITIES)
         super().__init__(
             f"{type(surface).__name__} cannot be used as a Surface: it does not implement "

@@ -47,7 +47,13 @@ from replay.escalation.control import (
     Resolution,
 )
 from replay.evidence import EvidenceRecorder
-from replay.surface.base import DialogPolicy, Observation, Surface
+from replay.surface.base import (
+    ENUMERATION,
+    DialogPolicy,
+    DiscoverableSurface,
+    Observation,
+    require_surface,
+)
 from replay.surface.inventory import Candidate
 
 DEFAULT_MAX_STEPS = 25
@@ -210,7 +216,7 @@ class DiscoveryResult:
 class DiscoveryLoop:
     def __init__(
         self,
-        surface: Surface,
+        surface: DiscoverableSurface,
         llm: LLMClient,
         recorder: EvidenceRecorder,
         *,
@@ -219,6 +225,15 @@ class DiscoveryLoop:
         vision: bool = True,
         escalation: EscalationHandler | None = None,
     ) -> None:
+        # Both refusals here, where the loop is wired, rather than at the step
+        # that would first have needed the missing piece. Enumeration is
+        # optional to the engine and load-bearing here: this loop is nothing
+        # but "enumerate, let the model pick an index, act", so a surface that
+        # cannot enumerate cannot be discovered against at all, and a run that
+        # finds that out at its first observation has already opened the target
+        # application and spent a turn getting to an AttributeError.
+        require_surface(surface)
+        ENUMERATION.require(surface)
         self.surface = surface
         self.llm = llm
         self.recorder = recorder
@@ -301,7 +316,7 @@ class DiscoveryLoop:
                 return
 
             observation = self.surface.observe(screenshot=self.vision)
-            candidates = self.surface.inventory()  # type: ignore[attr-defined]
+            candidates = self.surface.inventory()
             rendered = render_observation(
                 observation, candidates, step=step, max_steps=self.max_steps
             )
@@ -550,7 +565,7 @@ class DiscoveryLoop:
             # have refused.
             allowlist=(
                 self.surface.allowlist.describe()
-                if getattr(self.surface, "allowlist", None) is not None
+                if self.surface.allowlist is not None
                 else None
             ),
         )
@@ -653,8 +668,7 @@ class DiscoveryLoop:
         volatile |= {v for v in result.outputs.values() if v}
 
         texts: list[str] = []
-        inventory = getattr(self.surface, "inventory", None)
-        for candidate in inventory() if inventory else []:
+        for candidate in self.surface.inventory():
             for text in (candidate.label, candidate.name):
                 if not text or text in volatile or text in texts:
                     continue
@@ -664,8 +678,5 @@ class DiscoveryLoop:
         return texts
 
     def _visible_text(self) -> str:
-        reader = getattr(self.surface, "text_of", None)
-        if reader is None:
-            return ""
         observation = self.surface.observe(screenshot=False)
-        return "\n".join(reader(frame.path) for frame in observation.frames)
+        return "\n".join(self.surface.text_of(frame.path) for frame in observation.frames)
