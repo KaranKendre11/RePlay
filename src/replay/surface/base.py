@@ -6,7 +6,7 @@ the brief's heterogeneity requirement: extending to a legacy desktop app means
 writing one more implementation of :class:`Surface`, not touching the artifact
 schema or the replay engine.
 
-Two decisions make the seam hold.
+Three decisions make the seam hold.
 
 **Observations are accessibility trees, not markup.** An HTML string is a web
 fact. A tree of roles, names and values is something a browser, a screen reader
@@ -17,6 +17,19 @@ every layer above and quietly make the desktop story impossible.
 element; it says how it had to find it. A capability that used to resolve by
 accessible name and now resolves by raw XPath still works, but it has drifted,
 and drift you cannot see is drift you cannot manage.
+
+**Optional capabilities are declared, not discovered.** Not every surface can
+do everything: a terminal has no markup to dump, and a surface that cannot
+photograph a screen has nothing to cover before it does. Those two live in
+their own protocols — :class:`DumpsMarkup` and :class:`MasksScreenshots` —
+which a surface opts into by implementing them, and whose absence the engine
+states in the run log along with what it costs. The alternative, a caller
+reaching for a method with ``getattr`` and shrugging when it is not there,
+makes the optionality accidental rather than explicit: it is invisible to
+whoever writes the next surface, and it degrades in silence. Everything else is
+required, ``text_of`` most of all, because the error taxonomy is built on screen
+text and a surface that could not report it would report every session timeout
+as a missed checkpoint.
 """
 
 from __future__ import annotations
@@ -28,6 +41,7 @@ from typing import Any, Protocol, runtime_checkable
 from replay.artifact.conditions import Condition
 from replay.artifact.locators import Tier
 from replay.artifact.schema import Action, TargetSpec
+from replay.policy.allowlist import Allowlist
 
 
 class SurfaceError(RuntimeError):
@@ -204,19 +218,51 @@ class Surface(Protocol):
     desktop accessibility API; one that leaked selectors, cookies or page
     objects could not.
 
-    Layers above also *look* for four things beyond this protocol, and degrade
-    quietly rather than failing when they are absent — so a second surface that
-    omits them will work, and will be worse in ways nothing reports:
-    ``text_of`` (without it a failure carries no screen text, and the engine
-    stops being able to tell a 500 from a drifted locator), ``html_of`` (no DOM
-    dump in the failure evidence), ``mask_in_screenshots`` (sensitive controls
-    are photographed), and ``allowlist`` (no navigation guardrail). They are
-    optional because a terminal has no DOM to dump, not because they are
-    unimportant.
+    This is the required core, and it is the whole brief: an object that
+    satisfies it can be handed to the replay engine and gets every guarantee
+    the engine advertises, with nothing waiting to be discovered at run time.
+    Two further things a surface *may* be able to do are declared separately,
+    as :class:`DumpsMarkup` and :class:`MasksScreenshots`, and are opted into
+    by implementing them.
+
+    ``text_of`` is in here rather than beside those two because the error
+    taxonomy runs on it. Screen text is how a session timeout and an
+    application 500 are told apart from a drifted locator; a surface that could
+    not report it would report all three as a missed checkpoint, which is the
+    exact misdiagnosis the taxonomy exists to prevent. So it is required, and
+    :func:`require_surface` refuses a surface without it when the engine is
+    built rather than shrugging at it four steps into a run.
+    """
+
+    allowlist: Allowlist | None
+    """Where this surface may go and what it may do there. ``None`` for no
+    restriction, which is only ever acceptable in a test.
+
+    Required, though it may be empty, and required as state rather than as a
+    method because the guardrail is enforced *inside* :meth:`act` rather than
+    at the call site (``replay.policy.allowlist``). That placement is what
+    makes it impossible to route around, and it only works if holding one is
+    part of being a surface. The engine reads it to record which boundary a run
+    was working inside — including the answer "none", which a reviewer needs to
+    be told rather than left to infer from an absent field.
     """
 
     def observe(self, *, screenshot: bool = True) -> Observation:
         """Snapshot the current state."""
+
+    def text_of(self, path: list[str] | None = None) -> str:
+        """The visible text of one view, as a person reading the screen sees it.
+
+        ``path`` names a view the way :class:`FrameView` does; ``None`` means
+        whatever the surface treats as its top view. Flat text rather than a
+        tree, because what consumes it is a substring match against the
+        product's declared session-lost and application-error markers, and
+        those are written the way they appear on screen.
+
+        Empty when the view genuinely has nothing readable in it. That is a
+        statement about the screen, and it must not be reachable by a surface
+        that simply cannot look — which is why this is core.
+        """
 
     def resolve(self, target: TargetSpec, *, timeout_ms: int = 5_000) -> Resolution:
         """Run the locator ladder. Raises :class:`TargetNotFound` if none hit."""
@@ -266,3 +312,111 @@ class Surface(Protocol):
         """
 
     def close(self) -> None: ...
+
+
+@runtime_checkable
+class DumpsMarkup(Protocol):
+    """Optional: this surface can produce the markup behind a view.
+
+    Honestly web-only. A terminal and a desktop accessibility tree have no
+    markup at all, and a core protocol demanding one would be asking every
+    future surface to invent something in order to conform.
+    """
+
+    def html_of(self, path: list[str] | None = None) -> str:
+        """Raw markup, for failure evidence only.
+
+        Never for deciding what to do next — that is what :class:`Observation`
+        is for, and the reason it carries no markup. ``None`` means every view
+        the surface can reach.
+        """
+
+
+@runtime_checkable
+class MasksScreenshots(Protocol):
+    """Optional: this surface can cover a control before it photographs a screen.
+
+    Meaningless on a surface that produces no screenshot, which is why it is
+    not core. Nowhere near meaningless on one that does, which is why its
+    absence is announced rather than assumed harmless: a screenshot is pixels,
+    and no redactor can take a password back out of them afterwards.
+    """
+
+    def mask_in_screenshots(self, target: TargetSpec) -> None:
+        """Cover this control in every screenshot this surface takes from now on."""
+
+
+@dataclass(frozen=True)
+class OptionalCapability:
+    """One thing a surface may not be able to do, and what is lost when it cannot.
+
+    The consequence is written here, next to the protocol, rather than at the
+    place that notices the absence. Whoever reads a run's evidence needs to be
+    told what they lost and not merely which method was missing, and there
+    should be one sentence saying it wherever the question comes up.
+    """
+
+    name: str
+    protocol: type
+    consequence: str
+
+    def offered_by(self, surface: object) -> bool:
+        return isinstance(surface, self.protocol)
+
+
+#: Everything above the core that the replay engine will use when it is offered
+#: and do without when it is not. Iterated rather than checked one at a time, so
+#: a third entry added here is reported without the engine learning its name.
+OPTIONAL_CAPABILITIES: tuple[OptionalCapability, ...] = (
+    OptionalCapability(
+        name="html_of",
+        protocol=DumpsMarkup,
+        consequence=(
+            "failure evidence carries no markup dump, so a broken screen has to be "
+            "diagnosed from the accessibility tree and the screenshot alone"
+        ),
+    ),
+    OptionalCapability(
+        name="mask_in_screenshots",
+        protocol=MasksScreenshots,
+        consequence=(
+            "controls holding sensitive values are not covered before a screenshot is "
+            "taken, and a screenshot is pixels the redactor cannot scrub afterwards"
+        ),
+    ),
+)
+
+
+class IncompleteSurface(TypeError):
+    """Something offered as a :class:`Surface` does not implement the core.
+
+    A ``TypeError`` rather than a :class:`SurfaceError`, because nothing went
+    wrong while driving a surface — the object never was one. That is a wiring
+    mistake and it should be paid for where it was wired.
+    """
+
+    def __init__(self, surface: object, missing: list[str]) -> None:
+        self.missing = missing
+        optional = ", ".join(capability.name for capability in OPTIONAL_CAPABILITIES)
+        super().__init__(
+            f"{type(surface).__name__} cannot be used as a Surface: it does not implement "
+            f"{', '.join(missing)}. Every member of the Surface protocol is required; only "
+            f"{optional} are optional, and those are declared as their own protocols."
+        )
+
+
+def require_surface(surface: object) -> Surface:
+    """Refuse anything that cannot meet the core contract, before a run starts.
+
+    ``isinstance(surface, Surface)`` asks the same question — a
+    runtime-checkable protocol checks exactly this — but answers only yes or
+    no. Whoever is writing the second surface is better served by being told
+    which member they left out, and told while wiring it up rather than at the
+    step where the missing one would first have been useful.
+    """
+    # __protocol_attrs__ is what typing.get_protocol_members reads, and that
+    # function wants 3.13; this project's floor is 3.12.
+    missing = sorted(name for name in Surface.__protocol_attrs__ if not hasattr(surface, name))
+    if missing:
+        raise IncompleteSurface(surface, missing)
+    return surface  # type: ignore[return-value]

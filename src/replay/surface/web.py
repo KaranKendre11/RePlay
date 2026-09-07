@@ -105,7 +105,14 @@ def xpath_literal(value: str) -> str:
 
 
 class WebSurface:
-    """A browser driven through Playwright."""
+    """A browser driven through Playwright.
+
+    Implements the core :class:`~replay.surface.base.Surface` and both optional
+    capabilities beside it — a browser has markup to dump
+    (:class:`~replay.surface.base.DumpsMarkup`) and screenshots to cover things
+    in (:class:`~replay.surface.base.MasksScreenshots`). A surface that has
+    neither is still a surface; it simply says so by not implementing them.
+    """
 
     def __init__(
         self,

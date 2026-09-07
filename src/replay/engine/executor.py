@@ -61,11 +61,15 @@ from replay.escalation.detect import reason_for, summarise
 from replay.evidence import EvidenceRecorder, new_run_id
 from replay.policy import PolicyRefused, RiskGate
 from replay.surface.base import (
+    OPTIONAL_CAPABILITIES,
     ControlNotHeld,
     DialogPolicy,
+    DumpsMarkup,
+    MasksScreenshots,
     Surface,
     SurfaceError,
     TargetNotFound,
+    require_surface,
 )
 
 
@@ -187,7 +191,12 @@ class ReplayExecutor:
         gate: RiskGate | None = None,
         escalation: EscalationHandler | None = None,
     ) -> None:
-        self.surface = surface
+        # Checked here, where the engine is wired up, rather than at the step
+        # that would first have needed the missing piece. A surface that cannot
+        # report screen text cannot support the error taxonomy, and a run that
+        # discovers that halfway through has already written evidence nobody
+        # should trust.
+        self.surface = require_surface(surface)
         self.artifact = artifact
         # Where this capability is being run. A recorded entry point names one
         # host; the same capability has to run against a different port in a
@@ -215,6 +224,8 @@ class ReplayExecutor:
             evidence_dir=str(self.recorder.dir),
         )
 
+        self._announce_surface()
+
         try:
             bound = bind_parameters(self.artifact, arguments or {})
         except InvalidArguments as exc:
@@ -228,8 +239,14 @@ class ReplayExecutor:
             return result
 
         # Sensitive values are masked before anything can write them, and the
-        # controls holding them are covered before any screenshot is taken.
-        cover = getattr(self.surface, "mask_in_screenshots", None)
+        # controls holding them are covered before any screenshot is taken — on
+        # a surface that can cover them. One that cannot has already said so, in
+        # the run log, naming these inputs.
+        cover = (
+            self.surface.mask_in_screenshots
+            if isinstance(self.surface, MasksScreenshots)
+            else None
+        )
         for spec in self.artifact.inputs:
             if not spec.sensitive:
                 continue
@@ -268,11 +285,7 @@ class ReplayExecutor:
             arguments=bound,
             approval=self.artifact.reliability.approval.value,
             gate=self.gate.describe(),
-            allowlist=(
-                self.surface.allowlist.describe()
-                if getattr(self.surface, "allowlist", None) is not None
-                else None
-            ),
+            allowlist=self._guardrails(),
         )
 
         try:
@@ -645,11 +658,7 @@ class ReplayExecutor:
             observed=failure.observed,
             url=self._current_url(),
             screenshot_ref=failure.evidence.get("screenshot"),
-            allowlist=(
-                self.surface.allowlist.describe()
-                if getattr(self.surface, "allowlist", None) is not None
-                else None
-            ),
+            allowlist=self._guardrails(),
         )
         self.recorder.event("escalation_raised", **request.to_dict())
 
@@ -670,18 +679,72 @@ class ReplayExecutor:
 
         return resolved.resolution is Resolution.RESUMED
 
+    def _guardrails(self) -> dict[str, list[str]] | None:
+        """What this surface will refuse, for the run log and for the operator.
+
+        ``None`` means there is no allowlist at all, which is a different
+        statement from an allowlist that happens to permit everything, and the
+        evidence keeps them apart.
+        """
+        allowlist = self.surface.allowlist
+        return allowlist.describe() if allowlist is not None else None
+
     def _current_url(self) -> str:
         observation = self.surface.observe(screenshot=False)
         return observation.frames[-1].url if observation.frames else observation.url
 
     # -- evidence ---------------------------------------------------------
 
+    def _announce_surface(self) -> None:
+        """Record, once and up front, what this surface cannot do.
+
+        A capability used when present and skipped when absent is a silent
+        downgrade: the evidence for a run against a surface with no markup dump
+        and no screenshot masking looks exactly like the evidence for a run
+        that needed neither. So it is said out loud, before anything is
+        attempted, and with the consequence spelled out — "html_of missing"
+        means nothing to whoever opens this file six weeks from now.
+        """
+        for capability in OPTIONAL_CAPABILITIES:
+            if capability.offered_by(self.surface):
+                continue
+            detail: dict[str, Any] = {}
+            if capability.protocol is MasksScreenshots:
+                # Named, because this is the one with a compliance edge. These
+                # are the values the artifact declared must not be seen, and
+                # they are about to be photographed.
+                detail["sensitive_inputs"] = [s.name for s in self.artifact.inputs if s.sensitive]
+            self.recorder.event(
+                "surface_capability_unavailable",
+                capability=capability.name,
+                surface=type(self.surface).__name__,
+                consequence=capability.consequence,
+                **detail,
+            )
+
+        # Declared but empty, so its absence arrives as a None rather than as a
+        # missing method. The degradation is the same and so is the reporting.
+        if self.surface.allowlist is None:
+            self.recorder.event(
+                "surface_capability_unavailable",
+                capability="allowlist",
+                surface=type(self.surface).__name__,
+                consequence=(
+                    "no navigation guardrail is in force, so every URL this flow reaches "
+                    "is permitted"
+                ),
+            )
+
     def _observed(self) -> str:
-        reader = getattr(self.surface, "text_of", None)
-        if reader is None:
-            return ""
+        """The screen, as text, behind every failure this run records.
+
+        Required of a surface rather than hoped for. Everything the error
+        taxonomy can say beyond "the checkpoint did not match" is decided from
+        this string, so a surface that returned nothing here would not degrade
+        the diagnosis, it would remove it.
+        """
         observation = self.surface.observe(screenshot=False)
-        return "\n".join(reader(frame.path) for frame in observation.frames)
+        return "\n".join(self.surface.text_of(frame.path) for frame in observation.frames)
 
     def _capture(self, step_id: str) -> dict[str, str]:
         """The richer signal the brief asks for on failure.
@@ -694,9 +757,9 @@ class ReplayExecutor:
         observation = self.surface.observe(screenshot=True)
         refs = self.recorder.observation(self._captures, observation, self._observed())
 
-        dumper = getattr(self.surface, "html_of", None)
-        if dumper is not None:
-            refs["dom"] = self.recorder.snapshot_text(f"dom/{step_id}.html", dumper())
+        if isinstance(self.surface, DumpsMarkup):
+            markup = self.surface.html_of()
+            refs["dom"] = self.recorder.snapshot_text(f"dom/{step_id}.html", markup)
         return refs
 
     def _finish(self, result: ReplayResult, started: float) -> None:
