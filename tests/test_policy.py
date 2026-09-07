@@ -117,6 +117,25 @@ def test_an_unapproved_capability_that_requires_approval_is_refused(write_capabi
         RiskGate(allow_risky=True, allow_irreversible=True).check_capability(write_capability)
 
 
+def test_an_unapproved_capability_may_still_run_when_a_person_is_reachable(write_capability):
+    """Approval gates *unattended* use. With an operator, the run is not unattended.
+
+    Without this, approval is unreachable for exactly the capabilities that need
+    it: approval is earned by replaying successfully, and a capability requiring
+    approval could not be replayed at all, so only capabilities that never needed
+    approval could ever get it. The person who takes the session is also a
+    stronger control than a flag set beforehand by whoever wrote the calling code.
+
+    Nothing is waved through — the door opens, and the irreversible step still
+    stops at :meth:`RiskGate.check_step` and routes to that person.
+    """
+    assert write_capability.reliability.approval is ApprovalState.DRAFT
+    RiskGate(allow_risky=True).check_capability(write_capability, escalation_available=True)
+
+    with pytest.raises(PolicyRefused, match="irreversible"):
+        RiskGate(allow_risky=True).check_step(write_capability.steps[6])
+
+
 def test_approval_satisfies_the_approval_requirement(write_capability):
     approved = write_capability.model_copy(deep=True)
     approved.reliability.approval = ApprovalState.APPROVED
