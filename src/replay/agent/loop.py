@@ -4,7 +4,7 @@ This is the only place a model is in the decision path. Everything the loop
 produces is designed to survive the model's removal — the trace it emits is a
 list of durable targets and typed declarations, not a conversation.
 
-Two choices are worth defending.
+Three choices are worth defending.
 
 **The model never sees its own transcript.** Each turn sends the goal, a compact
 log of actions taken, and the current screen. State lives in the action log, not
@@ -12,10 +12,19 @@ in a growing message history. That keeps token use flat over a long run, removes
 a whole class of tool-call pairing bugs, and — more usefully — means the loop
 behaves the same on turn 20 as on turn 2.
 
-**Failures are fed back, not raised.** A bad index or a missed click becomes a
-line in the action log that the model can see and respond to. A run that dies on
-the first mistake teaches us nothing about whether the model can recover, which
-is exactly what we need to know before trusting it to record a capability.
+**Failures are fed back, not raised.** A bad index, a missed click or a URL the
+allowlist refuses becomes a line in the action log that the model can see and
+respond to. A run that dies on the first mistake teaches us nothing about whether
+the model can recover, which is exactly what we need to know before trusting it
+to record a capability.
+
+**A stop the model cannot resolve is a question for a person.** Giving up,
+stalling and erroring are the three ways a run ends with the goal unmet and the
+session still live — and each is a moment where an operator can demonstrate the
+step the model could not work out and hand the browser straight back. So the
+loop asks, blocking, on the same session, before treating any of them as
+terminal. With nobody configured to ask, it fails, which is the only safe
+default for an unattended run.
 """
 
 from __future__ import annotations
@@ -29,8 +38,16 @@ from replay.agent.llm import LLMClient, LLMError, image_content
 from replay.agent.prompt import SYSTEM, goal_message, render_observation
 from replay.agent.vocabulary import TERMINAL_TOOLS, TOOLS, ToolCall
 from replay.artifact.schema import Action, TargetSpec
+from replay.escalation.control import (
+    EscalationHandler,
+    HumanAction,
+    InterventionReason,
+    InterventionRequest,
+    NoEscalation,
+    Resolution,
+)
 from replay.evidence import EvidenceRecorder
-from replay.surface.base import DialogPolicy, Surface
+from replay.surface.base import DialogPolicy, Observation, Surface
 from replay.surface.inventory import Candidate
 
 DEFAULT_MAX_STEPS = 25
@@ -200,6 +217,7 @@ class DiscoveryLoop:
         max_steps: int = DEFAULT_MAX_STEPS,
         timeout_s: float = DEFAULT_TIMEOUT_S,
         vision: bool = True,
+        escalation: EscalationHandler | None = None,
     ) -> None:
         self.surface = surface
         self.llm = llm
@@ -207,6 +225,10 @@ class DiscoveryLoop:
         self.max_steps = max_steps
         self.timeout_s = timeout_s
         self.vision = vision
+        # Nobody, unless someone is actually there. A run that blocks forever
+        # waiting on an operator who does not exist is worse than one that
+        # fails, and discovery is usually started unattended.
+        self.escalation: EscalationHandler = escalation or NoEscalation()
 
         self._history: list[str] = []
         self._recent: list[str] = []
@@ -222,25 +244,61 @@ class DiscoveryLoop:
             status=StopReason.ERROR,
             evidence_dir=str(self.recorder.dir),
         )
-        self.recorder.event("run_started", goal=goal, target=target, model=self.llm.name)
+        self.recorder.event(
+            "run_started",
+            goal=goal,
+            target=target,
+            model=self.llm.name,
+            escalation_available=not isinstance(self.escalation, NoEscalation),
+        )
 
-        self.surface.act(Action.NAVIGATE, value=target)
+        self._explore(goal, target, result)
+
+        self.recorder.event("run_finished", status=result.status.value, reason=result.reason)
+        self.recorder.result(result.to_dict())
+        return result
+
+    # -- the loop ---------------------------------------------------------
+
+    def _explore(self, goal: str, target: str, result: DiscoveryResult) -> None:
+        """Open the target and take turns until something ends the run.
+
+        Split out from :meth:`run` so that every way of stopping — including the
+        entry point being refused — still writes the same evidence on the way
+        out. A stop that skips the record is a stop nobody can review.
+        """
+        opening = self.surface.act(Action.NAVIGATE, value=target)
         result.actions.append(
             RecordedAction(
                 step_id="s1",
                 intent="Open the target application.",
                 action=Action.NAVIGATE,
                 value=target,
+                ok=opening.ok,
+                error=opening.error,
             )
         )
+
+        if not opening.ok:
+            # The entry point is chosen by whoever starts the run, not by the
+            # model, so a refusal here is a misconfiguration rather than a wrong
+            # turn: there is no earlier decision to route around and nothing for
+            # a person to demonstrate. Stop before spending a token looking at a
+            # page we never opened.
+            result.status = StopReason.ERROR
+            result.reason = opening.error or f"could not open {target}"
+            self.recorder.event("target_refused", target=target, error=result.reason)
+            return
 
         deadline = time.monotonic() + self.timeout_s
 
         for step in range(1, self.max_steps + 1):
             if time.monotonic() > deadline:
+                # A budget is not a question for a human, so this one does not
+                # escalate however long the operator has been at their desk.
                 result.status = StopReason.TIMEOUT
                 result.reason = f"exceeded {self.timeout_s:.0f}s"
-                break
+                return
 
             observation = self.surface.observe(screenshot=self.vision)
             candidates = self.surface.inventory()  # type: ignore[attr-defined]
@@ -255,7 +313,9 @@ class DiscoveryLoop:
                 result.status = StopReason.ERROR
                 result.reason = str(exc)
                 self.recorder.event("llm_error", step=step, error=str(exc))
-                break
+                if self._escalate(result, goal, step, observation, rendered, refs):
+                    continue
+                return
 
             self.recorder.message("assistant", {"tool": call.name, "arguments": call.arguments})
             self.recorder.event(
@@ -265,20 +325,22 @@ class DiscoveryLoop:
             if self._is_stalled(call):
                 result.status = StopReason.STALLED
                 result.reason = f"repeated {call.name} with identical arguments"
-                break
+                if self._escalate(result, goal, step, observation, rendered, refs):
+                    continue
+                return
 
             if call.name in TERMINAL_TOOLS:
                 self._finalise(call, result)
-                break
+                # Only asks when the stop needs a human: give_up, or a success
+                # claim the screen does not support. A genuine finish returns.
+                if self._escalate(result, goal, step, observation, rendered, refs):
+                    continue
+                return
 
             self._dispatch(call, candidates, result, step)
-        else:
-            result.status = StopReason.MAX_STEPS
-            result.reason = f"reached the {self.max_steps}-step limit"
 
-        self.recorder.event("run_finished", status=result.status.value, reason=result.reason)
-        self.recorder.result(result.to_dict())
-        return result
+        result.status = StopReason.MAX_STEPS
+        result.reason = f"reached the {self.max_steps}-step limit"
 
     # -- decision ---------------------------------------------------------
 
@@ -315,6 +377,14 @@ class DiscoveryLoop:
 
         if call.name == "navigate":
             url = str(call.arg("url", ""))
+            # navigate is the one tool that takes a free-form URL, so it is the
+            # one place the allowlist can be hit by a decision rather than by a
+            # recording. A refusal comes back as a failed outcome, not an
+            # exception: it lands in the action log like any other failure, the
+            # model sees the boundary it just hit and can route around it, and a
+            # run that was otherwise going fine is not thrown away. Stopping the
+            # run here would also tell us nothing about whether the model
+            # respects the edge once it can see where the edge is.
             outcome = self.surface.act(Action.NAVIGATE, value=url)
             self._record(
                 result,
@@ -437,6 +507,88 @@ class DiscoveryLoop:
         result.actions.append(action)
         self._history.append(f"{summary} → {'ok' if ok else f'FAILED: {error}'}")
         self.recorder.event("action", **action.to_dict())
+
+    # -- escalation -------------------------------------------------------
+
+    def _escalate(
+        self,
+        result: DiscoveryResult,
+        goal: str,
+        step: int,
+        observation: Observation,
+        rendered: str,
+        refs: dict[str, str],
+    ) -> bool:
+        """Ask a person to unstick the run. Returns whether they handed it back.
+
+        Blocking on purpose, the same as replay: a run that raises a request and
+        carries on has not escalated, it has logged. The request carries what an
+        operator needs in order to act without reconstructing the situation —
+        the goal, where we got to, the screen we got stuck on, and the model's
+        own account of why it stopped.
+
+        A stuck discovery is the case where a person is most useful, because
+        they can simply do the step the model could not work out. Nothing here
+        needs to know what they did: they act on the same live session, so the
+        next observation already shows it.
+        """
+        if not result.status.needs_human:
+            return False
+
+        request = InterventionRequest(
+            run_id=self.recorder.run_id,
+            capability=f"discovery: {goal}",
+            reason=InterventionReason.STUCK_DISCOVERY,
+            summary=f"discovery {result.status.value} at step {step}: {result.reason}",
+            step_id=str(step),
+            step_intent=goal,
+            observed=rendered,
+            url=observation.url,
+            screenshot_ref=refs.get("screenshot"),
+            # So whoever answers can see which boundary the model was working
+            # inside, and does not "fix" the run by going somewhere policy would
+            # have refused.
+            allowlist=(
+                self.surface.allowlist.describe()
+                if getattr(self.surface, "allowlist", None) is not None
+                else None
+            ),
+        )
+        self.recorder.event("escalation_raised", **request.to_dict())
+
+        self.surface.release_control()
+        self.recorder.event("control_transferred", to="operator", request_id=request.id)
+        try:
+            resolved = self.escalation.escalate(request)
+        finally:
+            performed = self.surface.reacquire_control() or []
+            self.recorder.event("control_transferred", to="automation", request_id=request.id)
+
+        resolved.human_actions.extend(
+            HumanAction(kind=a.get("kind", "?"), label=a.get("label", "")) for a in performed
+        )
+        self.recorder.event("escalation_resolved", **resolved.to_dict())
+
+        if resolved.resolution is not Resolution.RESUMED:
+            return False
+
+        # Three identical decisions were evidence of a stall against a screen
+        # that someone else has since changed. Start counting again.
+        self._recent.clear()
+        self._history.append(
+            f"an operator took over at step {step} and handed the session back "
+            f"({resolved.operator_note or 'no note'}); the screen below is what they left"
+        )
+        # Said out loud rather than buried, because a capability distilled from a
+        # run a human partly performed is not a capability the automation has
+        # shown it can replay on its own. What they did is in the evidence log,
+        # deliberately not in the trace M5 consumes.
+        result.warnings.append(
+            f"a human intervened at step {step} after {result.status.value}; "
+            f"{len(performed)} of their actions are in the evidence log and none of "
+            "them are in this trace, so any capability synthesised from it is unproven"
+        )
+        return True
 
     # -- termination ------------------------------------------------------
 

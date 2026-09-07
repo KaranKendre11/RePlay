@@ -10,19 +10,37 @@ covered offline, deterministically, for free.
 import json
 
 import pytest
+from typer.testing import CliRunner
 
 from replay.agent import DiscoveryLoop, MockLLM, StopReason, ToolCall
 from replay.artifact.schema import Action
+from replay.cli import app
+from replay.escalation import InterventionReason, Resolution, ScriptedOperator
 from replay.evidence import EvidenceRecorder
-from replay.surface import WebSurface
+from replay.policy import Allowlist
+from replay.surface import Controller, WebSurface
 from replay.surface.inventory import Candidate, build_ladder, role_of
 
 WORK = ["workframe"]
+
+#: The boundary a real discovery run gets: the app under test and nothing else.
+PERMISSIVE = Allowlist.permissive("127.0.0.1:*", "localhost:*")
+
+#: Tier 3 of the ladder. Nothing associates this field with its visible text
+#: except adjacency, so it is how an operator's stand-in has to find it too.
+LABEL_ADJACENT = "xpath=//td[normalize-space(text())='{}']/following-sibling::td[1]//input"
 
 
 @pytest.fixture
 def surface():
     with WebSurface() as s:
+        yield s
+
+
+@pytest.fixture
+def guarded_surface():
+    """A surface with an allowlist, which is the only kind the CLI now builds."""
+    with WebSurface(allowlist=PERMISSIVE) as s:
         yield s
 
 
@@ -322,3 +340,171 @@ def test_a_stable_checkpoint_raises_no_warning(surface, recorder, meridian_serve
     )
     result = DiscoveryLoop(surface, llm, recorder, vision=False).run("goal", meridian_server)
     assert result.warnings == []
+
+
+# ---------- guardrails ----------
+
+
+def test_a_refused_navigation_is_fed_back_rather_than_fatal(
+    guarded_surface, recorder, meridian_server
+):
+    """Discovery is the one path where the model chooses the URL, so it is the
+    one path that can walk into the allowlist rather than be recorded inside it.
+
+    A refusal is fed back like any other failure: the model sees the boundary it
+    hit, routes around it, and the rest of a run that was going fine survives.
+    """
+    guarded_surface.act(Action.NAVIGATE, value=meridian_server)
+    field = index_of(guarded_surface, label="Member ID")
+    button = index_of(guarded_surface, name="Search")
+
+    llm = MockLLM(
+        [
+            ToolCall(name="navigate", arguments={"url": "https://intranet.example.com/admin"}),
+            ToolCall(
+                name="type_text",
+                arguments={"index": field, "text": "12345", "parameter_name": "member_id"},
+            ),
+            ToolCall(name="click", arguments={"index": button, "expect_navigation": True}),
+            ToolCall(
+                name="finish", arguments={"summary": "Done.", "checkpoint_text": "Current Balance"}
+            ),
+        ]
+    )
+    result = DiscoveryLoop(guarded_surface, llm, recorder, vision=False).run(
+        "goal", meridian_server
+    )
+
+    refused = next(a for a in result.actions if a.value == "https://intranet.example.com/admin")
+    assert not refused.ok
+    assert "not in the allowlist" in refused.error
+    assert result.status is StopReason.GOAL_MET, "the run carried on past the boundary"
+
+    transcript = (recorder.dir / "transcript.jsonl").read_text()
+    assert "not in the allowlist" in transcript, "the model was told, not just the log"
+
+
+def test_a_target_outside_the_allowlist_never_opens(recorder, meridian_server):
+    """The entry point is chosen by whoever starts the run, not by the model.
+
+    So a refusal there is a misconfiguration rather than a wrong turn: there is
+    no earlier decision to route around, and no reason to spend a token looking
+    at a page that never loaded.
+    """
+    llm = MockLLM([])
+    with WebSurface(allowlist=Allowlist.permissive("intranet.example.com")) as elsewhere:
+        result = DiscoveryLoop(elsewhere, llm, recorder, vision=False).run("goal", meridian_server)
+
+    assert result.status is StopReason.ERROR
+    assert "not in the allowlist" in result.reason
+    assert result.actions[0].ok is False, "the refusal is on the record, not swallowed"
+    assert llm.seen == [], "the model was never consulted"
+
+
+def test_discover_refuses_to_start_without_a_policy_file(tmp_path):
+    """Default-deny has to hold at the wiring, not only at the enforcement point.
+
+    A discovery run with no allowlist is a model choosing URLs with no boundary,
+    which is the exact situation the guardrail exists for.
+    """
+    result = CliRunner().invoke(
+        app,
+        [
+            "discover",
+            "--goal",
+            "anything",
+            "--target",
+            "http://127.0.0.1:9/",
+            "--policy",
+            str(tmp_path / "absent.toml"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "refusing to run without an allowlist" in result.output
+    assert "OPENAI_API_KEY" not in result.output, "refused before a model was constructed"
+
+
+# ---------- escalation ----------
+
+
+def test_an_operator_can_unstick_a_run_that_gave_up(guarded_surface, recorder, meridian_server):
+    """A stuck discovery is where a person is most useful, and the whole
+    control-transfer mechanism already exists to let them help.
+
+    The model cannot work out the search; the operator performs it in the same
+    live browser; the next turn sees what they left and finishes the goal.
+    """
+
+    def operator_searches(_request):
+        assert guarded_surface.controller is Controller.OPERATOR, "automation must have let go"
+        frame = guarded_surface.frame_for(WORK)
+        frame.locator(LABEL_ADJACENT.format("Member ID")).fill("12345")
+        with frame.expect_navigation():
+            frame.get_by_role("button", name="Search").click()
+
+    llm = MockLLM(
+        [
+            ToolCall(name="give_up", arguments={"reason": "I cannot work out how to search"}),
+            ToolCall(
+                name="finish", arguments={"summary": "Done.", "checkpoint_text": "Current Balance"}
+            ),
+        ]
+    )
+    operator = ScriptedOperator(operator_searches)
+    result = DiscoveryLoop(guarded_surface, llm, recorder, vision=False, escalation=operator).run(
+        "Look up member 12345", meridian_server
+    )
+
+    assert operator.seen, "a person was actually asked"
+    asked = operator.seen[0]
+    assert asked.reason is InterventionReason.STUCK_DISCOVERY
+    assert asked.step_intent == "Look up member 12345"
+    assert "I cannot work out how to search" in asked.summary
+    assert asked.observed, "they got the screen, not just a step number"
+    assert asked.allowlist["domains"], "and the boundary they are being asked to work inside"
+
+    assert result.status is StopReason.GOAL_MET, "the run continued after the handoff"
+    assert guarded_surface.controller is Controller.AUTOMATION, "control came back"
+    assert any("a human intervened" in w for w in result.warnings), "and the run says so"
+
+    assert any(a.kind == "click" for a in asked.human_actions), "what they did was captured"
+    assert not any(a.action is Action.CLICK for a in result.actions), (
+        "but deliberately not written into the trace a capability is synthesised from"
+    )
+
+
+def test_a_stalled_run_reaches_a_person_too(guarded_surface, recorder, meridian_server):
+    """Giving up is not the only way to be stuck. Repeating one decision until
+    the loop stops it is the same situation with less self-awareness."""
+    repeat = ToolCall(name="click", arguments={"index": 0})
+    operator = ScriptedOperator(resolution=Resolution.ABORTED)
+    result = DiscoveryLoop(
+        guarded_surface, MockLLM([repeat] * 4), recorder, vision=False, escalation=operator
+    ).run("goal", meridian_server)
+
+    assert operator.seen[0].reason is InterventionReason.STUCK_DISCOVERY
+    assert result.status is StopReason.STALLED, "an abandoned run still ends where it stopped"
+
+
+def test_a_stuck_run_with_nobody_to_ask_fails_rather_than_waiting(
+    guarded_surface, recorder, meridian_server
+):
+    """The default handler is NoEscalation, on purpose.
+
+    Discovery is usually started unattended, and a run that blocks forever on an
+    operator who does not exist is worse than one that fails.
+    """
+    llm = MockLLM([ToolCall(name="give_up", arguments={"reason": "the screen is blocked"})])
+    result = DiscoveryLoop(guarded_surface, llm, recorder, vision=False).run(
+        "goal", meridian_server
+    )
+
+    assert result.status is StopReason.GAVE_UP
+    assert result.warnings == [], "nobody intervened, so there is nothing to disclose"
+
+    events = [json.loads(line) for line in (recorder.dir / "run.jsonl").read_text().splitlines()]
+    raised = next(e for e in events if e["kind"] == "escalation_raised")
+    assert raised["reason"] == "stuck_discovery"
+    resolved = next(e for e in events if e["kind"] == "escalation_resolved")
+    assert resolved["resolution"] == "aborted", "asked, nobody there, run over"
