@@ -39,9 +39,15 @@ DEFAULT = ("lookup_balance", {"member_id": "12345"})
 #: Short, so a step that cannot possibly resolve fails quickly rather than
 #: spending the full production timeout in the test suite. The slow injection
 #: is the exception: it stalls for 3s deliberately, and absorbing that is the
-#: behaviour under test, so it gets the production timeout.
+#: behaviour under test.
 TEST_TIMEOUT_MS = 2_500
-TIMEOUT_FOR = {Injection.SLOW: 10_000}
+
+#: The step budget for that exception has to clear the *declared* wait, not
+#: merely the stall. `lookup_balance` declares a 15s navigation wait on s3, so a
+#: 10s step budget cut the wait short and made the test assert the executor's
+#: bound rather than the artifact's — which is the opposite of what it claims to
+#: check, and flaked under load because 10s was the tighter of the two.
+TIMEOUT_FOR = {Injection.SLOW: 20_000}
 
 
 def replay(server: str, tmp_path, injection: Injection | None, run_id: str, capability=None):

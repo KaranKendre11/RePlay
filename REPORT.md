@@ -2,11 +2,10 @@
 
 ## 1. Architecture
 
-One Python process: a CLI, plus a thin HTTP surface for the two things that genuinely need one —
-the capability catalog an agent calls and the operator console a human uses. No queues, no
-database, no services; artifacts are JSON files on disk. Single-process and single-operator by
-choice, and every seam that would have to become a service — intervention queue, artifact store,
-catalog — is already an interface.
+One Python process: a CLI, plus a thin HTTP surface for the two things that need one — the
+capability catalog an agent calls and the operator console a human uses. No queues, no database,
+no services; artifacts are JSON files on disk. Single-process and single-operator by choice, and
+every seam that would have to become a service is already an interface.
 
 ```
 goal ─▶ agent/        observe → decide → act; the only place a model sits
@@ -109,16 +108,16 @@ through a surface that is nothing but text on a screen. The honest limit is coor
 as tier 6, never exercised, and the tier that would matter most on a screenshot-only surface.
 
 **Nothing in the engine knows which product it is driving.** The text meaning a session expired,
-the outcomes a capability can legitimately reach, the interstitials worth recovering from — all
-declared per product and carried by the artifact, because every vendor spells them differently and
-an engine holding one product's error codes silently stops classifying against every other. A
-product that declares nothing gets no reclassification: honest degradation rather than confident
-mislabelling, and a test strips the declaration to prove the answer changes.
+the outcomes a capability can reach, the interstitials worth recovering from — all declared per
+product and carried by the artifact, because every vendor spells them differently and an engine
+holding one product's error codes silently stops classifying against every other. A product
+declaring nothing gets no reclassification: honest degradation rather than confident mislabelling,
+and a test strips the declaration to prove the answer changes.
 
 **Multi-tenant.** A capability is recorded once and *specialised* per tenant by overrides that may
 change the entry point, a target, a checkpoint or an outcome detector — never the steps, inputs or
 outputs, which are the contract (`artifact/overrides.py`). `apply_override` re-derives that
-contract afterwards and refuses anything that moved, so a tenant needing a different flow needs a
+contract afterwards and refuses anything that moved: a tenant needing a different flow needs a
 different capability.
 
 Demonstrated, not asserted: the Northgate variant renames the member field, the search button, the
@@ -128,11 +127,11 @@ succeeds at the tiers it was recorded at.
 
 ## 5. Escalation & handoff
 
-**Detecting stuck.** Discovery: `give_up`, a repeated identical decision, or a model error. Replay:
-a step policy will not take unattended, an expired session, a checkpoint that will not come true, a
-vanished control. All of them reach a person. Deliberately *not* escalated: a malformed argument
-nobody can fix, a business outcome, which is a correct answer, and a spent step or time budget —
-paging for any of them teaches operators to ignore the queue.
+**Detecting stuck.** Discovery: `give_up`, a repeated identical decision, a model error. Replay: a
+step policy will not take unattended, an expired session, a checkpoint that will not come true, a
+vanished control. All reach a person. Deliberately *not* escalated: a malformed argument nobody can
+fix, a business outcome, which is a correct answer, and a spent budget — paging for any of them
+teaches operators to ignore the queue.
 
 **Control transfer.** One explicit holder, `automation` or `operator`, every transition logged —
 not a lock, not two booleans that can disagree. The browser context is never torn down, so "the
@@ -145,9 +144,8 @@ resumes the same way, then warns that a human did part of the work: those steps 
 trace synthesis reads, so the result is not a replayable capability.
 
 **What the human did** is captured, not self-reported: a capture-phase listener in every frame
-reports clicks, changes and Enter presses, recording *which control was touched, never what was
-typed*. The console is deliberately bare and does not stream the screen — the browser is headed and
-the operator is sitting in front of it.
+records *which control was touched, never what was typed*. The console is bare and does not stream
+the screen — the browser is headed and the operator is in front of it.
 
 ## 6. Safety
 
@@ -155,30 +153,29 @@ the operator is sitting in front of it.
 command opening a surface refuses to start without a policy file. The allowlist lives inside
 `Surface.act` and the risk gate inside the executor, so discovery, replay, recovery and the HTTP
 catalog are covered without knowing the guardrails exist — a guardrail checked by its callers is
-one a future caller forgets. Discovery matters most, being the one path where a model rather than a
-recording picks the URL: a refused entry point stops the run, a refused destination becomes a line
-in the model's action log, so it sees the boundary and routes around it. Deny beats allow, because
-a deny rule exists precisely when a general rule was too generous.
+one a future caller forgets. Discovery matters most, being the one path where a model picks the
+URL: a refused entry point stops the run, a refused destination becomes a line in the model's
+action log, so it routes around the boundary. Deny beats allow, because a deny rule exists
+precisely when a general rule was too generous.
 
-**Three risk classes, not a slider.** `safe` proceeds; `risky` needs approval or an explicit opt-in;
+**Three risk classes, not a slider.** `safe` proceeds; `risky` needs approval or an opt-in;
 `irreversible` is **blocked by default**, and `--allow-risky` does not imply `--allow-irreversible`
 — committing money is not "more of" creating a record. Blocking rather than prompting makes the
-safety valve and the human-in-the-loop path one mechanism, and refusal happens before a browser
-opens, so a blocked run leaves the application untouched.
+safety valve and the human-in-the-loop path one mechanism. Refusal happens before a browser opens.
 
 **Approval is earned, not typed.** Counters are derived from run evidence, never stored — a stored
-counter merely *claims* five clean replays happened, and nothing has to rewrite a published
-artifact just because someone ran it. `replay approve` needs five recent runs, no failures, no
-drift, three full successes and more than one argument set. A business outcome exercises only a
-prefix of the flow, so it counts apart and cannot satisfy the success requirement: `lookup_balance`
-is unapprovable until it has met a member who does not exist.
+counter merely *claims* five clean replays happened. `replay approve` needs five recent runs, no
+failures, no drift, three full successes and more than one argument set. A business outcome
+exercises only a prefix of the flow, so it counts apart: `lookup_balance` is unapprovable until it
+has met a member who does not exist. Approval gates *unattended* use, so a reachable operator
+satisfies it — otherwise a capability needing approval could never earn one, having never been
+allowed to run.
 
 **Redaction in two layers.** Explicit masks cover values we were handed; shape patterns cover what
-appears on screen and lands in an observation dump — or a screenshot, which is pixels and is masked
-too. Short digit strings are left alone: a member ID is the caller's argument, not a secret. The
-converse bit us — a pattern that ate `name@version` as an email address redacted every capability
-name in the evidence, including the one shown to an operator being asked to take over. A redactor
-needs testing in both directions.
+lands in an observation dump — or a screenshot, which is pixels and is masked too. Short digit
+strings are left alone: a member ID is the caller's argument, not a secret. The converse bit us —
+a pattern that ate `name@version` as an email address redacted every capability name in the
+evidence, including the one shown to an operator being asked to take over. Test both directions.
 
 **Limits.** The allowlist is host-and-path based, so it cannot distinguish a legitimate
 `POST /member/12345/subaccount` from a malicious one. Risk is classified at record time from
@@ -190,28 +187,23 @@ control, which is why the schema works so hard to keep them readable.
 
 ## 7. Cuts
 
-**Not built, deliberately.** A real co-browsing console, and multi-tenant infrastructure — no
-registry, no per-tenant deployment; the *artifact* is designed for reuse, the plumbing is not.
-Stretch goals declined: multi-run flakiness scoring, code generation, and assisted LLM fallback,
-the last of which would muddy the "no model in the replay loop" claim determinism rests on.
-`LabelAdjacentLocator` returns `None` for above/below rather than guessing at column arithmetic.
-And folding an operator's manual steps into the artifact when they unstick a discovery — a
-capability part-discovered and part-demonstrated is the interesting version, and a much bigger
-change; the run warns instead.
+**Not built, deliberately.** A real co-browsing console; multi-tenant infrastructure — the
+*artifact* is designed for reuse, the plumbing is not. Stretch goals declined: flakiness scoring,
+code generation, and assisted LLM fallback, the last of which would muddy the "no model in the
+replay loop" claim determinism rests on. `LabelAdjacentLocator` returns `None` for above/below
+rather than guessing at column arithmetic. And folding an operator's manual steps into the artifact
+when they unstick a discovery — part-discovered, part-demonstrated is the interesting version and a
+much bigger change; the run warns instead.
 
 **Next, in order.**
 
 1. **A real desktop surface.** The seam is now exercised — the engine replays through a
    text-only surface with no browser under it — but against a stub, not a live accessibility API.
    That last step is the load-bearing bet still taken on trust.
-2. **Unblock approval for the capabilities that need it.** A capability requiring approval cannot
-   currently be replayed, so it can never earn the record that would approve it; only the ones that
-   do not need approval can get it. The gate wants either an operator who can approve in the
-   moment or an explicit supervised opt-in.
-3. **A drift dashboard.** The tier comparison is the right signal and currently only reaches a run
+2. **A drift dashboard.** The tier comparison is the right signal and currently only reaches a run
    log; across hundreds of tenants it wants to be a ranked list of capabilities sliding down the
    ladder.
-4. **Shared sub-flows.** Both capabilities duplicate a search prefix.
+3. **Shared sub-flows.** Both capabilities duplicate a search prefix.
 
 **One thing I got wrong.** A real `gpt-5` run offered `"4,211.03"` — the balance it had just read —
 as proof of success (`evidence/discovery-20260906T091017Z`): true for member 12345, false for
