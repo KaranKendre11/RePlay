@@ -1,5 +1,5 @@
 {
-  "capability": "«redacted»",
+  "capability": "open_subaccount@1.0.0",
   "run_id": "replay-06-policy-refused",
   "status": "failed",
   "outputs": {},
@@ -7,8 +7,8 @@
   "failure": {
     "step_id": "-",
     "class": "policy_refused",
-    "expected": "policy permitting «redacted»",
-    "observed": "refused capability «redacted»: it contains an irreversible step; irreversible actions are blocked by default and need a human to take the session",
+    "expected": "policy permitting open_subaccount@1.0.0",
+    "observed": "refused capability open_subaccount@1.0.0: it contains an irreversible step; irreversible actions are blocked by default and need a human to take the session",
     "evidence": {}
   },
   "duration_ms": 0,

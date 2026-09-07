@@ -181,7 +181,7 @@ targets/meridian/   the hostile legacy app, and a second tenant's variant
   review.toml       product knowledge a happy-path run cannot discover
 artifacts/          saved capabilities (JSON, reviewable, diffable)
 overrides/          per-tenant deltas
-evidence/           committed runs — three real gpt-5 discoveries, six replays
+evidence/           committed runs — three real gpt-5 discoveries, seven replays
 policy.toml         the guardrails
 ```
 
@@ -200,6 +200,7 @@ Committed, from real runs, not reconstructed.
 | `replay-04-recovered` | Interstitial dismissed and recorded |
 | `replay-05-cross-tenant` | Same artifact, second institution |
 | `replay-06-policy-refused` | Irreversible capability blocked before touching the app |
+| `replay-07-escalation` | A human takes the live session, finishes the step, hands it back |
 
 Each contains a structured `run.jsonl`, per-step screenshots and accessibility snapshots, a
 `result.json`, and a `capability.json` copy of the artifact that run produced or replayed —
