@@ -83,10 +83,24 @@ class RiskGate:
                 f"capability {artifact.ref}",
                 "it changes state; pass --allow-risky or approve the capability",
             )
-        if artifact.policy.requires_approval and not self._approved(artifact):
+        # Same carve-out as the irreversible check above, and for the same
+        # reason. Approval is what lets a capability run *unattended*; with an
+        # operator reachable the run is not unattended, and the person who takes
+        # the session is a stronger control than a flag set beforehand.
+        #
+        # Without this, approval is unreachable for exactly the capabilities
+        # that need it: one is earned by replaying successfully, and a
+        # capability requiring approval could not be replayed at all. Only
+        # capabilities that did not need approval could ever get it.
+        if (
+            artifact.policy.requires_approval
+            and not self._approved(artifact)
+            and not escalation_available
+        ):
             raise PolicyRefused(
                 f"capability {artifact.ref}",
-                f"it requires approval and is still {artifact.reliability.approval.value}",
+                f"it requires approval and is still {artifact.reliability.approval.value}; "
+                "approve it, or run with an operator reachable so a person can take the step",
             )
 
     def check_step(self, step: Step) -> None:

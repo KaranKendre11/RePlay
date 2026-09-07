@@ -137,20 +137,22 @@ uses under `--escalate`. The only stand-in is *who does the clicking* — `Scrip
 same one the test suite uses, because a live handoff cannot be committed to a repository without
 a person at a keyboard at the moment it is recorded.
 
-**It also had to mark the capability approved first, and that is a real gap rather than a
-convenience.** `open_subaccount` carries `approval: draft`, and the risk gate refuses an
-unapproved capability that requires approval — unconditionally, with no flag and no available
-operator clearing it. So the obvious command does *not* work today:
+Reproduce it with a real person:
 
 ```bash
-# refused before a browser opens: "it requires approval and is still draft"
 uv run replay run open_subaccount \
     -p member_id=12345 -p product_code=S02 -p opening_deposit=50.00 \
     --allow-risky --escalate
 ```
 
-Which means a capability that needs approval can never earn it by replaying, because it cannot be
-replayed. This run and `tests/test_escalation.py` both set approval in memory to get past it —
-two places independently routing around the same gate, which is the signal that the gate is wrong
-rather than that the callers are. Tracked as issue #49, with the three options laid out; it is a
-design decision, not an oversight to patch quietly.
+Six steps run, the guardrail stops at `s7`, the operator console opens at
+<http://127.0.0.1:8765>, and the headed browser waits for you. Do the step, press **Hand control
+back**, and the run finishes.
+
+That command was itself broken until recently, and how it broke is worth recording. Approval gates
+*unattended* use, but the check ignored whether an operator was reachable — so an unapproved
+capability was refused at the door even with a person standing by, and since approval is earned by
+replaying successfully, a capability requiring approval could never earn it. Only capabilities that
+never needed approval could get it. This run and `tests/test_escalation.py` both set approval in
+memory to get past it; two callers independently routing around the same control is a fact about
+the control. The fix was the carve-out the neighbouring irreversible check already used.
