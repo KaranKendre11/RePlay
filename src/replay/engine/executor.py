@@ -125,11 +125,18 @@ class InvalidArguments(ValueError):
 
 
 def bind_parameters(artifact: CapabilityArtifact, supplied: dict[str, Any]) -> dict[str, str]:
-    """Check the caller's arguments against the declared contract.
+    r"""Check the caller's arguments against the declared contract.
 
     Done up front, before a browser is touched. A typo in an argument should
     cost nothing and should never be reported as though the application
     misbehaved.
+
+    The pattern check is a *full* match. ``re.match`` anchors only at the
+    start, so ``\d+`` would accept ``12345; DROP``. Synthesis writes
+    ``^\d+$`` and would have been safe either way, but the artifact is a
+    document a reviewer is invited to tighten by hand, and a reviewer writing
+    ``\d{5}`` should not silently get a looser check than the one they
+    narrowed.
     """
     declared = {p.name: p for p in artifact.inputs}
     unknown = sorted(set(supplied) - set(declared))
@@ -145,7 +152,7 @@ def bind_parameters(artifact: CapabilityArtifact, supplied: dict[str, Any]) -> d
                 raise InvalidArguments(f"missing required argument {name!r}")
             continue
         value = str(supplied[name])
-        if spec.pattern and not re.match(spec.pattern, value):
+        if spec.pattern and not re.fullmatch(spec.pattern, value):
             raise InvalidArguments(
                 f"argument {name!r} does not match the declared pattern {spec.pattern!r}"
             )

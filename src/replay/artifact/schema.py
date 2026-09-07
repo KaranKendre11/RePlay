@@ -119,6 +119,25 @@ class ParamSpec(Model):
     pattern: str | None = Field(default=None, description="Regex the value must match.")
 
     @model_validator(mode="after")
+    def _pattern_must_compile(self) -> ParamSpec:
+        """Reject an unusable regex when the artifact is loaded, not when it is called.
+
+        Otherwise the first caller to supply this parameter gets an ``re.error``
+        out of ``bind_parameters`` — an engine crash, on a valid invocation,
+        for a defect that was sitting in the document all along.
+        """
+        if self.pattern is None:
+            return self
+        try:
+            re.compile(self.pattern)
+        except re.error as exc:
+            raise ValueError(
+                f"parameter {self.name!r} declares a pattern that is not a valid "
+                f"regular expression: {exc}"
+            ) from exc
+        return self
+
+    @model_validator(mode="after")
     def _sensitive_params_carry_no_example(self) -> ParamSpec:
         if self.sensitive and self.example is not None:
             raise ValueError(
