@@ -135,14 +135,22 @@ often typing exactly the data this system must not persist.
 executor, the same guardrail, the same browser context, the same release-and-reacquire the CLI
 uses under `--escalate`. The only stand-in is *who does the clicking* — `ScriptedOperator`, the
 same one the test suite uses, because a live handoff cannot be committed to a repository without
-a person at a keyboard at the moment it is recorded. Run it yourself with a real person:
+a person at a keyboard at the moment it is recorded.
+
+**It also had to mark the capability approved first, and that is a real gap rather than a
+convenience.** `open_subaccount` carries `approval: draft`, and the risk gate refuses an
+unapproved capability that requires approval — unconditionally, with no flag and no available
+operator clearing it. So the obvious command does *not* work today:
 
 ```bash
+# refused before a browser opens: "it requires approval and is still draft"
 uv run replay run open_subaccount \
     -p member_id=12345 -p product_code=S02 -p opening_deposit=50.00 \
     --allow-risky --escalate
 ```
 
-The capability also carries `approval: draft`, and an unapproved capability requiring approval is
-refused. This run marks it approved first, standing in for the review step the workflow expects
-before unattended use.
+Which means a capability that needs approval can never earn it by replaying, because it cannot be
+replayed. This run and `tests/test_escalation.py` both set approval in memory to get past it —
+two places independently routing around the same gate, which is the signal that the gate is wrong
+rather than that the callers are. Tracked as issue #49, with the three options laid out; it is a
+design decision, not an oversight to patch quietly.
