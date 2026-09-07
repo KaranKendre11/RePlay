@@ -13,11 +13,13 @@ asserts it implements exactly the declared members and not one thing beyond
 them, so nothing below can quietly come to depend on something the protocol
 does not promise.
 
-This is the test that was missing. #35 and #41 were both found by reading
+This is the test that was missing. #35, #41 and #48 were all found by reading
 rather than by a checker: the engine reached past the protocol with ``getattr``
 and shrugged when a method was absent, so a surface conforming exactly to the
 specification lost screen text — and with it every failure class above "the
-checkpoint did not match".
+checkpoint did not match". The checker now scans everything under
+``src/replay``, not just the engine, because #48 was the same defect one package
+over and found by hand for the third time.
 """
 
 import ast
@@ -26,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from replay import engine
+from replay.agent import DiscoveryLoop, MockLLM
 from replay.artifact import ArtifactStore
 from replay.artifact.conditions import AllOf, AnyOf, Condition, Not, TextAbsent, TextPresent
 from replay.artifact.locators import Tier
@@ -39,6 +41,7 @@ from replay.surface import (
     ActionOutcome,
     DialogPolicy,
     DumpsMarkup,
+    Enumerates,
     FrameView,
     IncompleteSurface,
     MasksScreenshots,
@@ -211,16 +214,16 @@ def test_the_optional_capabilities_are_opted_into_rather_than_assumed():
 
     assert not isinstance(minimal, DumpsMarkup)
     assert not isinstance(minimal, MasksScreenshots)
+    assert not isinstance(minimal, Enumerates)
     assert isinstance(MarkupSurface(), DumpsMarkup)
     assert isinstance(MaskingSurface(), MasksScreenshots)
 
 
-def test_the_web_surface_satisfies_the_core_and_both_optional_capabilities():
+def test_the_web_surface_satisfies_the_core_and_every_optional_capability():
     """The one real implementation has to be an instance of what it claims."""
     with WebSurface(allowlist=Allowlist.permissive("127.0.0.1:*")) as surface:
         assert isinstance(surface, Surface)
-        assert isinstance(surface, DumpsMarkup)
-        assert isinstance(surface, MasksScreenshots)
+        assert [c.name for c in OPTIONAL_CAPABILITIES if not c.offered_by(surface)] == []
 
 
 def test_a_surface_that_cannot_read_the_screen_is_refused_when_the_engine_is_built(
@@ -251,18 +254,41 @@ def test_a_surface_that_cannot_read_the_screen_is_refused_when_the_engine_is_bui
     assert not (tmp_path / "evidence").exists(), "refused before a run directory was created"
 
 
-def test_the_engine_reaches_for_nothing_the_protocol_does_not_declare():
-    """The checker neither #35 nor #41 had.
+def test_a_surface_that_cannot_be_enumerated_is_refused_when_the_loop_is_built(tmp_path):
+    """Optional to the engine, mandatory to discovery — and said at the seam.
 
-    Both were found by reading. A dependency the engine expresses as
+    Replay is handed the locator ladders the recording already computed;
+    discovery has none, so it asks the surface to enumerate what is on screen
+    and the model points at an index. A surface that cannot enumerate cannot be
+    discovered against at all, which is a fact about how it was wired and not
+    about the run — so it is refused here rather than at the first observation,
+    after the target application has already been opened.
+    """
+    with (
+        EvidenceRecorder("minimal-discovery", root=tmp_path) as recorder,
+        pytest.raises(IncompleteSurface, match="inventory"),
+    ):
+        DiscoveryLoop(MinimalSurface(MEMBER_SCREEN), MockLLM([]), recorder)
+
+
+def test_nothing_under_src_reaches_for_what_no_protocol_declares():
+    """The checker none of #35, #41 or #48 had.
+
+    All three were found by reading. A dependency a module expresses as
     ``getattr(self.surface, "…")`` is invisible to whoever implements the
-    protocol, so this asserts the reverse direction: every name the engine
-    reaches for on a surface is a name the protocol — core or optional —
-    promises will be there.
+    protocol, so this asserts the reverse direction: every name anything under
+    ``src/replay`` reaches for on a surface is a name the protocol — core or
+    optional — promises will be there.
+
+    Every module, not just the engine's. #48 was this same defect in
+    ``agent/loop.py``, which the engine-only version of this scan could not
+    see, and the point of a checker is that the fourth one cannot happen.
     """
     declared = set(Surface.__protocol_attrs__) | {c.name for c in OPTIONAL_CAPABILITIES}
+    source = Path(__file__).resolve().parents[1] / "src" / "replay"
+    assert source.is_dir(), f"{source} is not the package; this scan would pass vacuously"
 
-    for module in sorted(Path(engine.__file__).parent.glob("*.py")):
+    for module in sorted(source.rglob("*.py")):
         used = surface_attributes(module.read_text())
         assert used <= declared, (
             f"{module.name} reaches for {sorted(used - declared)} on the surface, "
@@ -359,7 +385,7 @@ def test_the_capabilities_this_surface_lacks_are_named_in_the_run_evidence(artif
     _, directory = replay(surface, artifact, tmp_path, "minimal-announced")
 
     announced = unavailable(directory)
-    assert set(announced) == {"html_of", "mask_in_screenshots", "allowlist"}
+    assert set(announced) == {"html_of", "mask_in_screenshots", "inventory", "allowlist"}
     assert all(event["consequence"] for event in announced.values()), "what it cost, not just what"
     assert announced["html_of"]["surface"] == "MinimalSurface"
 

@@ -155,7 +155,7 @@ replay actually agrees — so the app and the engine cannot drift apart silently
 ## Tests
 
 ```bash
-uv run pytest        # 337 tests, ~100s, no API key needed
+uv run pytest        # 338 tests, ~100s, no API key needed
 uv run ruff check .
 ```
 
