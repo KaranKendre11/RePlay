@@ -110,7 +110,11 @@ def create_api(
     *,
     artifacts_dir: Path | str = "artifacts",
     policy_file: Path | str = "policy.toml",
-    evidence_dir: Path | str = "evidence",
+    # Not "evidence": that directory is a curated deliverable and it is what the
+    # approval tally is read from, so a server producing evidence continuously
+    # from agent traffic would both dirty it and move numbers nobody meant to
+    # move. A one-shot `replay run` is a deliberate act and still defaults there.
+    evidence_dir: Path | str = "runs",
     queue: InterventionQueue | None = None,
     headed: bool = False,
     allowlist: Allowlist | None = None,
@@ -199,12 +203,18 @@ def serve(
     port: int = 8000,
     artifacts_dir: Path | str = "artifacts",
     policy_file: Path | str = "policy.toml",
+    evidence_dir: Path | str = "runs",
     headed: bool = False,
 ) -> None:
     import uvicorn
 
     uvicorn.run(
-        create_api(artifacts_dir=artifacts_dir, policy_file=policy_file, headed=headed),
+        create_api(
+            artifacts_dir=artifacts_dir,
+            policy_file=policy_file,
+            evidence_dir=evidence_dir,
+            headed=headed,
+        ),
         host=host,
         port=port,
         log_level="info",
