@@ -201,9 +201,10 @@ Committed, from real runs, not reconstructed.
 | `replay-05-cross-tenant` | Same artifact, second institution |
 | `replay-06-policy-refused` | Irreversible capability blocked before touching the app |
 
-Each contains a structured `run.jsonl`, per-step screenshots and accessibility snapshots, and a
-`result.json`. Discovery runs also keep the model transcript — referenced by the artifact, never
-embedded in it.
+Each contains a structured `run.jsonl`, per-step screenshots and accessibility snapshots, a
+`result.json`, and a `capability.json` copy of the artifact that run produced or replayed —
+`artifacts/` stays the source of truth. Discovery runs also keep the model transcript — referenced
+by the artifact, never embedded in it.
 
 ## Notes
 

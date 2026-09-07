@@ -1,0 +1,12 @@
+No capability was produced from this run, deliberately.
+
+The model proposed the balance it had just read as the proof of success. Synthesis
+refuses rather than emitting a capability whose success condition only holds for one
+member. Reproduce it:
+
+    $ uv run replay synthesize evidence/discovery-20260906T091017Z --name lookup_balance
+    synthesis failed: no stable checkpoint available: the model proposed '4,211.03',
+    which varies per invocation, and no stable text was captured on the success screen
+
+The refusal is the evidence. See result.json for the warning that fired, and
+../README.md for the full comparison against discovery-20260906T085541Z.
