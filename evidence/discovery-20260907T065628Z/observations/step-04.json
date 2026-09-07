@@ -1,0 +1,23 @@
+{
+  "rendered": "STEP 4 of 25\nURL: http://127.0.0.1:8080/\nHTTP STATUS: 200\n\nCONTROLS you can act on:\n  [0] link  \"Member Inquiry\"  frame=navframe\n  [1] link  \"Account Services\"  frame=navframe\n  [2] link  \"Transaction Journal\"  frame=navframe\n  [3] link  \"Reports\"  frame=navframe\n  [6] link  \"Open Sub-Account\"  frame=workframe\n\nVALUES you can read:\n  [4] cell  label='TELLER'  text='TLR0431'  frame=navframe\n  [5] cell  label='SESSION'  text='a2a68a5b'  frame=navframe\n  [7] cell  label='Member ID'  text='12345'  frame=workframe\n  [8] cell  label='Name'  text='DELORES A HARTWELL'  frame=workframe\n  [9] cell  label='Branch'  text='0042 - RIVERSIDE'  frame=workframe\n  [10] cell  label='Status'  text='ACTIVE'  frame=workframe\n  [11] cell  label='Type'  text='Account No'  frame=workframe\n  [12] cell  label='Type'  text='Current Balance'  frame=workframe\n  [13] cell  label='Type'  text='Status'  frame=workframe\n  [14] cell  label='SAVINGS'  text='0004421187'  frame=workframe\n  [15] cell  label='SAVINGS'  text='4,211.03'  frame=workframe\n  [16] cell  label='SAVINGS'  text='OPEN'  frame=workframe\n  [17] cell  label='CHECKING'  text='0004421188'  frame=workframe\n  [18] cell  label='CHECKING'  text='1,884.77'  frame=workframe\n  [19] cell  label='CHECKING'  text='OPEN'  frame=workframe",
+  "url": "http://127.0.0.1:8080/",
+  "title": "MERIDIAN CORE",
+  "http_status": 200,
+  "dialogs_seen": [],
+  "frames": [
+    {
+      "path": [
+        "navframe"
+      ],
+      "url": "http://127.0.0.1:8080/nav",
+      "aria": "- text: MERIDIAN CORE · NAV0001\n- table:\n  - rowgroup:\n    - row \"Member Inquiry\":\n      - cell \"Member Inquiry\":\n        - link \"Member Inquiry\":\n          - /url: /search\n    - row \"Account Services\":\n      - cell \"Account Services\":\n        - link \"Account Services\":\n          - /url: /search\n    - row \"Transaction Journal\":\n      - cell \"Transaction Journal\":\n        - link \"Transaction Journal\":\n          - /url: \"#\"\n    - row \"Reports\":\n      - cell \"Reports\":\n        - link \"Reports\":\n          - /url: \"#\"\n- table:\n  - rowgroup:\n    - row \"TELLER TLR0431\":\n      - cell \"TELLER\"\n      - cell \"TLR0431\"\n    - row \"SESSION a2a68a5b\":\n      - cell \"SESSION\"\n      - cell \"a2a68a5b\""
+    },
+    {
+      "path": [
+        "workframe"
+      ],
+      "url": "http://127.0.0.1:8080/member?f7=12345&f9=",
+      "aria": "- text: MERIDIAN CORE · INQ0200\n- table:\n  - rowgroup:\n    - row \"Member ID 12345 Name DELORES A HARTWELL Branch 0042 - RIVERSIDE Status ACTIVE\":\n      - cell \"Member ID 12345 Name DELORES A HARTWELL Branch 0042 - RIVERSIDE Status ACTIVE\":\n        - table:\n          - rowgroup:\n            - row \"Member ID 12345\":\n              - cell \"Member ID\"\n              - cell \"12345\"\n            - row \"Name DELORES A HARTWELL\":\n              - cell \"Name\"\n              - cell \"DELORES A HARTWELL\"\n            - row \"Branch 0042 - RIVERSIDE\":\n              - cell \"Branch\"\n              - cell \"0042 - RIVERSIDE\"\n            - row \"Status ACTIVE\":\n              - cell \"Status\"\n              - cell \"ACTIVE\"\n    - row \"Type Account No Current Balance Status SAVINGS 0004421187 4,211.03 OPEN CHECKING 0004421188 1,884.77 OPEN\":\n      - cell \"Type Account No Current Balance Status SAVINGS 0004421187 4,211.03 OPEN CHECKING 0004421188 1,884.77 OPEN\":\n        - table:\n          - rowgroup:\n            - row \"Type Account No Current Balance Status\":\n              - columnheader \"Type\"\n              - columnheader \"Account No\"\n              - columnheader \"Current Balance\"\n              - columnheader \"Status\"\n            - row \"SAVINGS 0004421187 4,211.03 OPEN\":\n              - cell \"SAVINGS\"\n              - cell \"0004421187\"\n              - cell \"4,211.03\"\n              - cell \"OPEN\"\n            - row \"CHECKING 0004421188 1,884.77 OPEN\":\n              - cell \"CHECKING\"\n              - cell \"0004421188\"\n              - cell \"1,884.77\"\n              - cell \"OPEN\"\n    - row \"Open Sub-Account\":\n      - cell \"Open Sub-Account\":\n        - link \"Open Sub-Account\":\n          - /url: /member/12345/subaccount/new"
+    }
+  ]
+}

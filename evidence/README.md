@@ -43,8 +43,9 @@ out afterwards why something broke, so it is captured here and nowhere else.
 | `discovery-20260906T085541Z` | Look up member 12345 and read their savings balance | `goal_met`, 4 actions | `lookup_balance@1.1.0` |
 | `discovery-20260906T091017Z` | The same goal, and the model proposed a checkpoint that was rejected | `goal_met`, 4 actions | **none — synthesis refuses** |
 | `discovery-20260906T211130Z` | Open a sub-account and reach the confirmation screen | `goal_met`, 9 actions | `open_subaccount@1.0.0` |
+| `discovery-20260907T065628Z` | The same read goal again, and the rejected checkpoint was **substituted** | `goal_met`, 4 actions | `lookup_balance@1.1.0` |
 
-All three are genuine `gpt-5` runs against the live application. Each copied `capability.json`
+All four are genuine `gpt-5` runs against the live application. Each copied `capability.json`
 names its origin run in `provenance.run_id`, so the pairing above is checkable rather than
 asserted.
 

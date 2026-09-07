@@ -1,0 +1,159 @@
+{
+  "run_id": "discovery-20260907T065628Z",
+  "goal": "Look up member 12345 and read their current savings balance.",
+  "target": "http://127.0.0.1:8080/",
+  "model": "gpt-5",
+  "status": "goal_met",
+  "summary": "Looked up member 12345 and recorded their current savings balance.",
+  "checkpoint_text": "4,211.03",
+  "reason": "",
+  "parameters": {
+    "member_id": "12345"
+  },
+  "outputs": {
+    "savings_balance": "4,211.03"
+  },
+  "evidence_dir": "/tmp/e2e/discovery-20260907T065628Z",
+  "warnings": [
+    "checkpoint '4,211.03' contains the value read as output 'savings_balance'; it asserts this run's data rather than the state reached"
+  ],
+  "checkpoint_candidates": [
+    "Member Inquiry",
+    "Account Services",
+    "Transaction Journal",
+    "Reports",
+    "TELLER",
+    "SESSION",
+    "Open Sub-Account",
+    "Member ID",
+    "Name",
+    "Branch",
+    "Status",
+    "Type",
+    "SAVINGS",
+    "CHECKING"
+  ],
+  "actions": [
+    {
+      "step_id": "s1",
+      "intent": "Open the target application.",
+      "action": "navigate",
+      "target": null,
+      "value": "http://127.0.0.1:8080/",
+      "parameter_name": null,
+      "output_name": null,
+      "expect_navigation": false,
+      "accept_dialog": false,
+      "tier_used": null,
+      "read_value": null,
+      "ok": true,
+      "navigated": false,
+      "note": null,
+      "error": null
+    },
+    {
+      "step_id": "s2",
+      "intent": "Enter the member id field.",
+      "action": "type",
+      "target": {
+        "description": "Member ID field",
+        "rationale": "This textbox exposed no accessible name in the tree, so role+name cannot lead. The visible label 'Member ID' is associated only by layout adjacency, which is what resolves it here. Ladder recorded as 3:label_adjacent, 5:selector.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "label_adjacent",
+            "label": "Member ID",
+            "relation": "right",
+            "control": "input"
+          },
+          {
+            "kind": "selector",
+            "engine": "css",
+            "expression": "input[name='f7']"
+          }
+        ]
+      },
+      "value": "12345",
+      "parameter_name": "member_id",
+      "output_name": null,
+      "expect_navigation": false,
+      "accept_dialog": false,
+      "tier_used": 3,
+      "read_value": null,
+      "ok": true,
+      "navigated": false,
+      "note": null,
+      "error": null
+    },
+    {
+      "step_id": "s3",
+      "intent": "Click Search.",
+      "action": "click",
+      "target": {
+        "description": "Search",
+        "rationale": "Accessible name 'Search' was present on this button, so role+name leads the ladder and stays portable to a desktop surface. Ladder recorded as 1:role_name.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "role_name",
+            "role": "button",
+            "name": "Search",
+            "exact": true
+          }
+        ]
+      },
+      "value": null,
+      "parameter_name": null,
+      "output_name": null,
+      "expect_navigation": true,
+      "accept_dialog": false,
+      "tier_used": 1,
+      "read_value": null,
+      "ok": true,
+      "navigated": true,
+      "note": null,
+      "error": null
+    },
+    {
+      "step_id": "s4",
+      "intent": "Read savings value as output 'savings_balance'.",
+      "action": "read",
+      "target": {
+        "description": "SAVINGS value",
+        "rationale": "This cell exposed no accessible name in the tree, so role+name cannot lead. The visible label 'SAVINGS' is associated only by layout adjacency, which is what resolves it here. Ladder recorded as 4:anchored_text, 5:selector.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "anchored_text",
+            "anchor": "SAVINGS",
+            "relation": "same_row",
+            "offset": 2,
+            "nth": 0
+          },
+          {
+            "kind": "selector",
+            "engine": "xpath",
+            "expression": "//tr[td[normalize-space()=\"SAVINGS\"]]/td[3]"
+          }
+        ]
+      },
+      "value": null,
+      "parameter_name": null,
+      "output_name": "savings_balance",
+      "expect_navigation": false,
+      "accept_dialog": false,
+      "tier_used": 4,
+      "read_value": "4,211.03",
+      "ok": true,
+      "navigated": false,
+      "note": null,
+      "error": null
+    }
+  ]
+}
