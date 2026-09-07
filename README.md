@@ -155,7 +155,7 @@ replay actually agrees — so the app and the engine cannot drift apart silently
 ## Tests
 
 ```bash
-uv run pytest        # 278 tests, ~90s, no API key needed
+uv run pytest        # 337 tests, ~100s, no API key needed
 uv run ruff check .
 ```
 
@@ -181,7 +181,7 @@ targets/meridian/   the hostile legacy app, and a second tenant's variant
   review.toml       product knowledge a happy-path run cannot discover
 artifacts/          saved capabilities (JSON, reviewable, diffable)
 overrides/          per-tenant deltas
-evidence/           committed runs — three real gpt-5 discoveries, seven replays
+evidence/           committed runs — four real gpt-5 discoveries, seven replays
 policy.toml         the guardrails
 ```
 
@@ -194,6 +194,7 @@ Committed, from real runs, not reconstructed.
 | `discovery-20260906T085541Z` | **Real gpt-5 run** — the read flow, 4 actions |
 | `discovery-20260906T091017Z` | **Real gpt-5 run** — the model proposed a checkpoint that only held for one member; the loop caught it |
 | `discovery-20260906T211130Z` | **Real gpt-5 run** — the write flow, 9 actions, irreversible |
+| `discovery-20260907T065628Z` | **Real gpt-5 run** — same failure, opposite outcome: the checkpoint was substituted, not refused |
 | `replay-01-success` | Deterministic replay with typed outputs |
 | `replay-02-business-outcome` | `MEMBER_NOT_FOUND` returned as a result |
 | `replay-03-hard-failure` | Application error, with DOM snapshot |

@@ -1,0 +1,237 @@
+{
+  "schema_version": "1.0",
+  "name": "lookup_balance",
+  "version": "1.1.0",
+  "title": "Look up member 12345 and read their current savings balance",
+  "description": "Looked up member 12345 and recorded their current savings balance.",
+  "app": {
+    "product": "MERIDIAN CORE",
+    "surface": "legacy_web",
+    "entry_url_pattern": "http://127.0.0.1:8080/",
+    "session_lost_markers": [
+      "SESSION EXPIRED",
+      "SEC-0031"
+    ],
+    "application_error_markers": [
+      "APPLICATION ERROR",
+      "SYS-500"
+    ]
+  },
+  "inputs": [
+    {
+      "name": "member_id",
+      "type": "string",
+      "description": "Supplied per invocation. Recorded example: '12345'.",
+      "required": true,
+      "sensitive": false,
+      "example": "12345",
+      "pattern": "^\\d+$"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "savings_balance",
+      "type": "money",
+      "description": "Read from 'SAVINGS value' on the final screen.",
+      "source": {
+        "step_id": "s4",
+        "extraction": "text"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "intent": "Open the target application.",
+      "action": "navigate",
+      "value": "http://127.0.0.1:8080/",
+      "waits": [],
+      "on_error": [],
+      "risk": "safe"
+    },
+    {
+      "id": "s2",
+      "intent": "Enter the member id field.",
+      "action": "type",
+      "target": {
+        "description": "Member ID field",
+        "rationale": "This textbox exposed no accessible name in the tree, so role+name cannot lead. The visible label 'Member ID' is associated only by layout adjacency, which is what resolves it here. Ladder recorded as 3:label_adjacent, 5:selector.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "label_adjacent",
+            "label": "Member ID",
+            "relation": "right",
+            "control": "input"
+          },
+          {
+            "kind": "selector",
+            "engine": "css",
+            "expression": "input[name='f7']"
+          }
+        ]
+      },
+      "value": {
+        "param": "member_id"
+      },
+      "waits": [],
+      "on_error": [],
+      "risk": "safe",
+      "expected_tier": 3
+    },
+    {
+      "id": "s3",
+      "intent": "Click Search.",
+      "action": "click",
+      "target": {
+        "description": "Search",
+        "rationale": "Accessible name 'Search' was present on this button, so role+name leads the ladder and stays portable to a desktop surface. Ladder recorded as 1:role_name.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "role_name",
+            "role": "button",
+            "name": "Search",
+            "exact": true
+          }
+        ]
+      },
+      "waits": [
+        {
+          "kind": "navigation",
+          "timeout_ms": 15000
+        }
+      ],
+      "checkpoint": {
+        "kind": "text_present",
+        "text": "Member Inquiry"
+      },
+      "on_error": [
+        {
+          "when": {
+            "kind": "text_present",
+            "text": "SYSTEM NOTICE"
+          },
+          "do": "click",
+          "target": {
+            "description": "Acknowledge and Continue link on the system notice interstitial",
+            "rationale": "Links carry an accessible name from their text, so role+name resolves this at tier 1 — the interstitial is one of the few controls on this application that does.",
+            "frame_path": [
+              "workframe"
+            ],
+            "strategies": [
+              {
+                "kind": "role_name",
+                "role": "link",
+                "name": "Acknowledge and Continue",
+                "exact": true
+              }
+            ]
+          },
+          "max_attempts": 2
+        }
+      ],
+      "risk": "safe",
+      "expected_tier": 1
+    },
+    {
+      "id": "s4",
+      "intent": "Read savings value as output 'savings_balance'.",
+      "action": "read",
+      "target": {
+        "description": "SAVINGS value",
+        "rationale": "This cell exposed no accessible name in the tree, so role+name cannot lead. The visible label 'SAVINGS' is associated only by layout adjacency, which is what resolves it here. Ladder recorded as 4:anchored_text, 5:selector.",
+        "frame_path": [
+          "workframe"
+        ],
+        "strategies": [
+          {
+            "kind": "anchored_text",
+            "anchor": "SAVINGS",
+            "relation": "same_row",
+            "offset": 2,
+            "nth": 0
+          },
+          {
+            "kind": "selector",
+            "engine": "xpath",
+            "expression": "//tr[td[normalize-space()=\"SAVINGS\"]]/td[3]"
+          }
+        ]
+      },
+      "waits": [],
+      "on_error": [],
+      "risk": "safe",
+      "expected_tier": 4
+    }
+  ],
+  "outcomes": [
+    {
+      "code": "MEMBER_NOT_FOUND",
+      "detect": {
+        "kind": "all_of",
+        "conditions": [
+          {
+            "kind": "text_present",
+            "text": "MEMBER_NOT_FOUND"
+          }
+        ]
+      },
+      "message": "No member on file for the supplied ID.",
+      "terminal": true
+    },
+    {
+      "code": "PERMISSION_DENIED",
+      "detect": {
+        "kind": "all_of",
+        "conditions": [
+          {
+            "kind": "text_present",
+            "text": "PERMISSION_DENIED"
+          }
+        ]
+      },
+      "message": "Teller authority is insufficient.",
+      "terminal": true
+    },
+    {
+      "code": "VALIDATION_REJECTED",
+      "detect": {
+        "kind": "all_of",
+        "conditions": [
+          {
+            "kind": "text_present",
+            "text": "VALIDATION_REJECTED"
+          }
+        ]
+      },
+      "message": "The application rejected the submitted values.",
+      "terminal": true
+    }
+  ],
+  "policy": {
+    "max_risk": "safe",
+    "requires_approval": false
+  },
+  "provenance": {
+    "recorded_at": "2026-09-07T07:18:59.929498Z",
+    "recorded_by": "discovery",
+    "model": "gpt-5",
+    "run_id": "discovery-20260907T065628Z",
+    "transcript_ref": "/tmp/e2e/discovery-20260907T065628Z/transcript.jsonl",
+    "notes": [
+      "model proposed checkpoint '4,211.03', which contains a value that varies per invocation; substituted stable screen text 'Member Inquiry'",
+      "pattern '^\\\\d+$' on 'member_id' was inferred from the single recorded example; tighten it if the real format is narrower"
+    ]
+  },
+  "reliability": {
+    "replays": 0,
+    "successes": 0,
+    "outcomes": 0,
+    "approval": "draft"
+  }
+}
