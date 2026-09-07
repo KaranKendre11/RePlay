@@ -101,9 +101,12 @@ one vendor release from failing and passes every test until it does.
 **Surface abstraction.** Extending to a desktop app means writing one more `Surface`, touching
 neither the schema nor the engine: steps address controls by role, name and layout relationships,
 all of which a desktop accessibility API supplies. The two web-specific pieces — `SelectorLocator`
-and `html_of()` — are the ladder's last resort and a failure-only dump. The honest limit is
-coordinates: recorded as tier 6, never exercised, and the tier that would matter most on a
-screenshot-only surface.
+and `html_of()` — are opt-in protocol extensions, not attributes the engine reaches for and hopes
+to find: a surface offering neither is refused nothing and the log says what it could not do, while
+one missing anything *required* — screen text included, since the taxonomy runs on it — is rejected
+when the engine is built, not halfway through a replay. A test replays a capability end to end
+through a surface that is nothing but text on a screen. The honest limit is coordinates: recorded
+as tier 6, never exercised, and the tier that would matter most on a screenshot-only surface.
 
 **Nothing in the engine knows which product it is driving.** The text meaning a session expired,
 the outcomes a capability can legitimately reach, the interstitials worth recovering from — all
@@ -135,11 +138,11 @@ paging for any of them teaches operators to ignore the queue.
 not a lock, not two booleans that can disagree. The browser context is never torn down, so "the
 human operates the same session" is structural: same cookies, same server-side session, same page.
 Escalation **blocks**; a run that raises a request and carries on has not escalated, it has logged.
-On hand-back the step is judged as if we had performed it — outcome first, then the checkpoint,
-re-asserted rather than assumed — after waiting for the screen, because a person's click carries no
-navigation promise to wait on and control returns while their submit is still in flight. A stuck
-discovery resumes the same way, then warns that a human did part of the work: those steps are not
-in the trace synthesis reads, so the result is not a replayable capability.
+On hand-back the step is judged as if we had performed it — outcome first, then checkpoint,
+re-asserted rather than assumed — after waiting for the screen, since a person's click carries no
+navigation promise and control returns while their submit is still in flight. A stuck discovery
+resumes the same way, then warns that a human did part of the work: those steps never reach the
+trace synthesis reads, so the result is not a replayable capability.
 
 **What the human did** is captured, not self-reported: a capture-phase listener in every frame
 reports clicks, changes and Enter presses, recording *which control was touched, never what was
@@ -148,26 +151,34 @@ the operator is sitting in front of it.
 
 ## 6. Safety
 
-**Default-deny, enforced structurally.** A missing or empty allowlist permits nothing, and every
-command that opens a surface — `discover`, `run`, `serve` — refuses to start without a policy file
-rather than falling back to permissive. The allowlist lives inside `Surface.act` and the risk gate
-inside the executor, so discovery, replay, recovery rules and the HTTP catalog are all covered
-without knowing the guardrails exist — a guardrail checked by its callers is one a future caller
-forgets. Discovery matters most there, being the one path where a model rather than a recording
-chooses the URL: a refused entry point stops the run, while a destination the model chose becomes a
-line in its action log, so it sees the boundary and routes around it. Deny beats allow, because a deny rule exists precisely when
-a general rule was too generous. Each guardrail below is argued at length under `policy/`.
+**Default-deny, enforced structurally.** An empty or missing allowlist permits nothing, and every
+command opening a surface refuses to start without a policy file. The allowlist lives inside
+`Surface.act` and the risk gate inside the executor, so discovery, replay, recovery and the HTTP
+catalog are covered without knowing the guardrails exist — a guardrail checked by its callers is
+one a future caller forgets. Discovery matters most, being the one path where a model rather than a
+recording picks the URL: a refused entry point stops the run, a refused destination becomes a line
+in the model's action log, so it sees the boundary and routes around it. Deny beats allow, because
+a deny rule exists precisely when a general rule was too generous.
 
 **Three risk classes, not a slider.** `safe` proceeds; `risky` needs approval or an explicit opt-in;
 `irreversible` is **blocked by default**, and `--allow-risky` does not imply `--allow-irreversible`
 — committing money is not "more of" creating a record. Blocking rather than prompting makes the
-safety valve and the human-in-the-loop path the same mechanism. Refusal happens before a browser
+safety valve and the human-in-the-loop path one mechanism, and refusal happens before a browser
 opens, so a blocked run leaves the application untouched.
 
-**Redaction in two layers.** Explicit masks cover values we were handed; shape-based patterns cover
-what appears on screen and lands in an observation dump — or in a screenshot, which is pixels and is
-masked too. Short digit strings are deliberately left alone: a member ID is the caller's argument,
-not a secret.
+**Approval is earned, not typed.** Counters are derived from run evidence, never stored — a stored
+counter merely *claims* five clean replays happened, and nothing has to rewrite a published
+artifact just because someone ran it. `replay approve` needs five recent runs, no failures, no
+drift, three full successes and more than one argument set. A business outcome exercises only a
+prefix of the flow, so it counts apart and cannot satisfy the success requirement: `lookup_balance`
+is unapprovable until it has met a member who does not exist.
+
+**Redaction in two layers.** Explicit masks cover values we were handed; shape patterns cover what
+appears on screen and lands in an observation dump — or a screenshot, which is pixels and is masked
+too. Short digit strings are left alone: a member ID is the caller's argument, not a secret. The
+converse bit us — a pattern that ate `name@version` as an email address redacted every capability
+name in the evidence, including the one shown to an operator being asked to take over. A redactor
+needs testing in both directions.
 
 **Limits.** The allowlist is host-and-path based, so it cannot distinguish a legitimate
 `POST /member/12345/subaccount` from a malicious one. Risk is classified at record time from
@@ -190,11 +201,13 @@ change; the run warns instead.
 
 **Next, in order.**
 
-1. **A desktop surface**, to prove the seam rather than argue it. The accessibility-tree bet is the
-   load-bearing claim here, and the one thing reasoned rather than demonstrated.
-2. **Approval workflow with reliability scoring.** The schema carries `draft`/`approved` and a
-   replay counter; nothing moves a capability between them. Auto-promotion after N clean replays
-   makes the guardrail self-maintaining.
+1. **A real desktop surface.** The seam is now exercised — the engine replays through a
+   text-only surface with no browser under it — but against a stub, not a live accessibility API.
+   That last step is the load-bearing bet still taken on trust.
+2. **Unblock approval for the capabilities that need it.** A capability requiring approval cannot
+   currently be replayed, so it can never earn the record that would approve it; only the ones that
+   do not need approval can get it. The gate wants either an operator who can approve in the
+   moment or an explicit supervised opt-in.
 3. **A drift dashboard.** The tier comparison is the right signal and currently only reaches a run
    log; across hundreds of tenants it wants to be a ranked list of capabilities sliding down the
    ladder.
