@@ -1,31 +1,43 @@
 """Surfaces: the seam between perceiving and acting, and the flow we recorded."""
 
 from replay.surface.base import (
+    OPTIONAL_CAPABILITIES,
     ActionOutcome,
     Controller,
     ControlNotHeld,
     DialogPolicy,
+    DumpsMarkup,
     FrameNotFound,
     FrameView,
+    IncompleteSurface,
+    MasksScreenshots,
     Observation,
+    OptionalCapability,
     Resolution,
     Surface,
     SurfaceError,
     TargetNotFound,
+    require_surface,
 )
 from replay.surface.web import WebSurface
 
 __all__ = [
+    "OPTIONAL_CAPABILITIES",
     "ActionOutcome",
     "ControlNotHeld",
     "Controller",
     "DialogPolicy",
+    "DumpsMarkup",
     "FrameNotFound",
     "FrameView",
+    "IncompleteSurface",
+    "MasksScreenshots",
     "Observation",
+    "OptionalCapability",
     "Resolution",
     "Surface",
     "SurfaceError",
     "TargetNotFound",
     "WebSurface",
+    "require_surface",
 ]
