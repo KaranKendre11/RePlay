@@ -189,6 +189,38 @@ def test_an_application_error_is_attributed_to_the_application(meridian_server, 
     assert result.failure.failure_class is FailureClass.APPLICATION_ERROR
 
 
+def test_an_application_error_reads_like_one_end_to_end(meridian_server, tmp_path):
+    """The class was right and the story was about something else entirely.
+
+    A 500 stops the flow before the frameset exists, so the step-level
+    exception is ``TargetNotFound: ... no attached frame named 'workframe'``.
+    Reported as ``observed``, that is indistinguishable from a drifted locator,
+    and it sent the reader off to check a capability that was never at fault.
+    The screen decides the class, so the screen also tells the story — and
+    ``expected`` follows, because "enter the member id field" is not what was
+    expected of a server that fell over.
+    """
+    result = replay(meridian_server, tmp_path, Injection.ERROR500, "fail-500-narrative")
+    failure = result.failure
+
+    assert failure.failure_class is FailureClass.APPLICATION_ERROR
+    assert "application to respond" in failure.expected
+    assert "APPLICATION ERROR" in failure.observed or "SYS-500" in failure.observed
+    assert "TargetNotFound" not in failure.expected + failure.observed
+
+
+def test_the_surface_error_behind_an_application_error_is_kept(meridian_server, tmp_path):
+    """Demoted out of the headline, not thrown away.
+
+    It is still the most precise statement of what the automation tried and
+    what the browser said, and whoever debugs this later will want it — so it
+    moves into the evidence, beside the DOM dump and the screenshot.
+    """
+    result = replay(meridian_server, tmp_path, Injection.ERROR500, "fail-500-evidence")
+
+    assert "TargetNotFound" in result.failure.evidence["surface_error"]
+
+
 def test_the_engine_reads_those_markers_from_the_artifact_not_from_itself(
     meridian_server, tmp_path
 ):

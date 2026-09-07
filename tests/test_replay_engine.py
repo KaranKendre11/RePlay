@@ -137,6 +137,39 @@ def test_an_argument_that_violates_the_declared_pattern_is_rejected(artifact):
         bind_parameters(artifact, {"member_id": "not-a-number"})
 
 
+def test_a_hand_tightened_pattern_is_not_quietly_looser_than_the_generated_one(artifact):
+    r"""Synthesis writes ``^\d+$`` and invites a reviewer to narrow it.
+
+    A reviewer writing ``\d{5}`` has written something stricter, and under a
+    match anchored only at the start it silently became weaker: ``12345abc``
+    and ``12345; DROP`` both passed. The check has to be a full match, or the
+    invitation is a trap.
+    """
+    tightened = artifact.model_copy(deep=True)
+    tightened.inputs[0] = tightened.inputs[0].model_copy(update={"pattern": r"\d{5}"})
+
+    assert bind_parameters(tightened, {"member_id": "12345"}) == {"member_id": "12345"}
+    for junk in ("12345abc", "12345; DROP", "12345\n"):
+        with pytest.raises(InvalidArguments, match="declared pattern"):
+            bind_parameters(tightened, {"member_id": junk})
+
+
+def test_a_partly_numeric_member_id_is_a_caller_error_not_a_business_outcome(executor):
+    """The conflation this project exists to avoid, in its subtlest form.
+
+    ``12345abc`` looks enough like an ID to reach the application, which would
+    answer ``MEMBER_NOT_FOUND`` — a caller bug wearing a business answer's
+    clothes. The caller branches on it and never learns their argument was
+    malformed.
+    """
+    result = executor.run({"member_id": "12345abc"})
+
+    assert result.status is ReplayStatus.FAILED
+    assert result.failure.failure_class is FailureClass.INVALID_INPUT
+    assert result.outcome is None, "not an answer about a member"
+    assert result.steps == [], "nothing was executed"
+
+
 def test_a_caller_error_is_never_reported_as_an_application_problem(executor):
     result = executor.run({"member_id": "oops"})
     assert result.status is ReplayStatus.FAILED

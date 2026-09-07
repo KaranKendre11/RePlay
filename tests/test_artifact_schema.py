@@ -6,6 +6,7 @@ failure mode we would otherwise only discover at replay time, in production,
 against a bank system.
 """
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -246,6 +247,28 @@ def test_type_requires_a_value():
 def test_attribute_extraction_requires_an_attribute_name():
     with pytest.raises(ValidationError, match="requires an attribute name"):
         OutputSource(step_id="s1", extraction=Extraction.ATTRIBUTE)
+
+
+def test_a_pattern_that_does_not_compile_is_rejected():
+    """An unusable regex should fail at load, not at the first invocation.
+
+    Left to ``bind_parameters`` it becomes an ``re.error`` escaping the engine
+    on a perfectly valid call — the wrong moment, the wrong error, and pointing
+    at the wrong party. The rest of this schema rejects bad artifacts early;
+    this is the same bargain.
+    """
+    with pytest.raises(ValidationError, match="not a valid regular expression"):
+        ParamSpec(name="member_id", description="Member number.", pattern=r"^[0-9+$")
+
+
+def test_an_artifact_carrying_an_uncompilable_pattern_will_not_load(tmp_path):
+    """The document on disk is what a reviewer edits, so it is what gets checked."""
+    document = json.loads(serialize(artifact()))
+    document["inputs"][0]["pattern"] = r"(\d{5}"
+    (tmp_path / "lookup_balance@1.0.0.json").write_text(json.dumps(document))
+
+    with pytest.raises(ValidationError, match="not a valid regular expression"):
+        ArtifactStore(tmp_path).load("lookup_balance", "1.0.0")
 
 
 # ---------- safety ----------
