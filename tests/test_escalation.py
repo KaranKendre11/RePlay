@@ -35,6 +35,7 @@ from replay.escalation import (
 from replay.evidence import EvidenceRecorder
 from replay.policy import Allowlist, RiskGate
 from replay.surface import Controller, DialogPolicy, WebSurface
+from targets.meridian.inject import Injection
 
 PERMISSIVE = Allowlist.permissive("127.0.0.1:*", "localhost:*")
 
@@ -263,6 +264,81 @@ def test_an_operator_completes_a_blocked_step_and_hands_the_session_back(
     assert result.status is ReplayStatus.SUCCESS
     assert result.outputs["new_account_no"] == "12345046"
     assert result.escalation["resolution"] == "resumed"
+
+
+def test_an_operator_who_resumes_without_doing_the_work_does_not_get_a_pass(
+    meridian_server, write_capability, tmp_path
+):
+    """Resuming is a claim about the operator, not about the application.
+
+    Taking "I have handled it" at face value reports an account opened that was
+    never opened, which is the exact failure a checkpoint exists to prevent —
+    and on this capability the only checkpoint sits on the very step the
+    guardrail blocks, so the handoff is the one path that can reach it.
+    """
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-resumed-idle", root=tmp_path) as recorder,
+    ):
+        operator = ScriptedOperator()  # resumes, having touched nothing
+        result = ReplayExecutor(
+            surface,
+            write_capability,
+            recorder=recorder,
+            base_url=meridian_server,
+            # A confirmation that never arrives is waited for in full before it
+            # is called missing, so this test pays that budget. Short here to
+            # keep the suite quick; the production default is the one that
+            # matters, and it is the same budget every other step gets.
+            step_timeout_ms=2_000,
+            gate=RiskGate(allow_risky=True),
+            escalation=operator,
+        ).run({"member_id": "12345", "product_code": "S02", "opening_deposit": "50.00"})
+
+    assert operator.seen, "the step was blocked and escalated"
+    assert result.escalation["resolution"] == "resumed"
+    assert result.status is ReplayStatus.FAILED, "an unperformed step is not a success"
+    assert result.failure.failure_class is FailureClass.CHECKPOINT_UNMET
+    assert result.failure.step_id == "s7"
+    assert not result.outputs
+
+
+def test_a_business_outcome_the_operator_ran_into_reaches_the_caller(
+    meridian_server, write_capability, tmp_path
+):
+    """The application refuses a human exactly as readily as it refuses us.
+
+    VALIDATION_REJECTED is a declared answer the caller branches on. If it is
+    only noticed when the automation pressed the button, the same rejection
+    surfaces as a missed checkpoint — or as a confusing failure three steps
+    later — whenever a person pressed it instead.
+    """
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-outcome", root=tmp_path) as recorder,
+    ):
+
+        def operator_submits(_request):
+            surface.answer_next_dialog(DialogPolicy.ACCEPT)
+            frame = surface.frame_for(["workframe"])
+            frame.get_by_role("button", name="Submit").click()
+            frame.wait_for_load_state("load")
+
+        result = ReplayExecutor(
+            surface,
+            write_capability,
+            recorder=recorder,
+            # The application rejects the submission whoever sends it.
+            base_url=f"{meridian_server}/?inject={Injection.VALIDATION.value}",
+            gate=RiskGate(allow_risky=True),
+            escalation=ScriptedOperator(operator_submits),
+        ).run({"member_id": "12345", "product_code": "S02", "opening_deposit": "50.00"})
+
+    assert result.status is ReplayStatus.BUSINESS_OUTCOME
+    assert result.outcome.code == "VALIDATION_REJECTED"
+    assert result.outcome.detected_at_step == "s7"
+    assert result.failure is None
+    assert result.ok, "a declared answer is a successful invocation"
 
 
 def test_what_the_operator_did_is_recorded(meridian_server, write_capability, tmp_path):

@@ -21,7 +21,10 @@ us the answer.
 **Checkpoints are asserted, not assumed.** A click that raises no error has not
 demonstrated anything. Without the assertion a replay reports success whenever
 nothing crashed, which is exactly the failure mode that makes UI automation
-untrustworthy.
+untrustworthy. That holds for a step a human performed during a handoff too:
+the automation does not repeat their action, but it does check the result,
+because "I have handled it" is a claim about the operator rather than about the
+application.
 """
 
 from __future__ import annotations
@@ -311,7 +314,15 @@ class ReplayExecutor:
                     result.failure = failure
                     return
                 # The operator performed the blocked step themselves on the
-                # live session, so the automation does not repeat it.
+                # live session, so the automation does not repeat it —
+                # re-performing an irreversible action is the worst bug
+                # available here. Whether it *worked* is a separate question,
+                # and it gets the same answer as every other step.
+                report = self._operator_performed(step)
+                result.steps.append(report)
+                self._settle_after_handoff(step)
+                if not self._after_step(result, step, report):
+                    return
                 continue
 
             report = self._perform(step, bound, index)
@@ -329,28 +340,100 @@ class ReplayExecutor:
                     result.failure = self._diagnose(step, report)
                     return
 
-            outcome = self._detect_outcome(step)
-            if outcome is not None:
-                result.status = ReplayStatus.BUSINESS_OUTCOME
-                result.outcome = outcome
-                self.recorder.event("business_outcome", **outcome.to_dict())
-                return
-
-            if step.checkpoint is not None and not self._verify(step.checkpoint, step, report):
-                observed = self._observed()
-                result.failure = Failure(
-                    step_id=step.id,
-                    failure_class=(
-                        self._classify_screen(observed) or FailureClass.CHECKPOINT_UNMET
-                    ),
-                    expected=f"checkpoint {_describe(step.checkpoint)}",
-                    observed=observed,
-                    evidence=self._capture(step.id),
-                )
+            if not self._after_step(result, step, report):
                 return
 
         result.outputs = self._extract_outputs()
         result.status = ReplayStatus.SUCCESS
+
+    def _after_step(self, result: ReplayResult, step: Step, report: StepReport) -> bool:
+        """Read what the step left on screen. Returns whether the loop goes on.
+
+        Every way a step can end up done routes through here, including the one
+        where a person did it during a handoff. That branch used to fall
+        straight into the next step, which meant the single checkpoint on the
+        write capability — carried by the same step the guardrail blocks — was
+        never asserted on the one flow the escalation path takes. An operator
+        handing the session back asserts that they resumed, not that the
+        application agreed with them.
+
+        Order matters: a declared outcome is checked first, because
+        VALIDATION_REJECTED is an answer the caller asked for and is reachable
+        from exactly the screen where the checkpoint will not match. Reporting
+        it as a missed checkpoint would turn a business answer into a bug
+        report.
+
+        The recovery rules reach a handoff too, through :meth:`_verify` —
+        decided rather than inherited. A person clicking through a legacy
+        application is at least as likely to raise an interstitial as the
+        automation is, the rules are declared per step rather than per actor,
+        and one that stopped applying because a human had been involved would
+        be a rule nobody could reason about.
+        """
+        outcome = self._detect_outcome(step)
+        if outcome is not None:
+            result.status = ReplayStatus.BUSINESS_OUTCOME
+            result.outcome = outcome
+            self.recorder.event("business_outcome", **outcome.to_dict())
+            return False
+
+        if step.checkpoint is not None and not self._verify(step.checkpoint, step, report):
+            observed = self._observed()
+            result.failure = Failure(
+                step_id=step.id,
+                failure_class=(self._classify_screen(observed) or FailureClass.CHECKPOINT_UNMET),
+                expected=f"checkpoint {_describe(step.checkpoint)}",
+                observed=observed,
+                evidence=self._capture(step.id),
+            )
+            return False
+
+        return True
+
+    def _settle_after_handoff(self, step: Step) -> None:
+        """Wait for the screen the operator left us, before judging it.
+
+        When the automation performs a step it holds a promise from its own
+        click that the page will move, and ``act`` waits on it. A person's
+        click carries no such promise: control can come back while their submit
+        is still in flight, and the first thing we look at is then the screen
+        they left *behind*, not the one they produced. Reporting a missed
+        checkpoint against a confirmation that lands forty milliseconds later
+        would be a false failure on an irreversible step — the worst thing on
+        this flow to be wrong about, and the reason the check has to be worth
+        trusting before it is worth having.
+
+        So: poll until the screen shows something the artifact recognises —
+        the checkpoint, or a declared outcome — or the step's own budget runs
+        out. Bounded, because a screen that never arrives is a real failure and
+        still has to be reported as one; polled rather than slept, because a
+        fixed pause is simultaneously too long for the common case and too
+        short for the slow one.
+        """
+        if step.checkpoint is None:
+            # Nothing is expected, so there is nothing to wait for. Spending
+            # the budget here would tax every blocked step for no signal.
+            return
+
+        deadline = time.monotonic() + self.step_timeout_ms / 1000
+        while time.monotonic() < deadline:
+            if self.surface.evaluate(step.checkpoint) or self._detect_outcome(step) is not None:
+                return
+            time.sleep(0.1)
+
+    def _operator_performed(self, step: Step) -> StepReport:
+        """The step a human did, entered in the run's own record.
+
+        Otherwise the step list has a hole exactly where the interesting thing
+        happened. No tier and no duration, because no locator was resolved and
+        no action was timed — the operator used the live window, and
+        ``result.escalation`` is what records who was driving and what they
+        touched. ``ok`` says only that control came back with the step reported
+        done; the checkpoint that follows is what decides whether it was. It is
+        also where any recovery applied while verifying their work is written
+        down, which would otherwise have nowhere to go.
+        """
+        return StepReport(step_id=step.id, intent=step.intent, action=step.action.value, ok=True)
 
     def _perform(self, step: Step, bound: dict[str, str], index: int) -> StepReport:
         started = time.monotonic()
