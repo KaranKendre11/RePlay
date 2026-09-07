@@ -2,9 +2,11 @@
 
 ## 1. Architecture
 
-One Python process. A CLI, plus a thin HTTP surface for the two things that genuinely need one:
-the capability catalog an agent calls, and the operator console a human uses. No queues, no
-database, no services — artifacts are JSON files on disk.
+One Python process: a CLI, plus a thin HTTP surface for the two things that genuinely need one —
+the capability catalog an agent calls and the operator console a human uses. No queues, no
+database, no services; artifacts are JSON files on disk. Single-process and single-operator by
+choice, and every seam that would have to become a service — intervention queue, artifact store,
+catalog — is already an interface.
 
 ```
 goal ─▶ agent/        observe → decide → act; the only place a model sits
@@ -20,23 +22,12 @@ goal ─▶ agent/        observe → decide → act; the only place a model sit
    redaction         operator console
 ```
 
-Everything above `surface/` is surface-agnostic. `Surface` is a six-method protocol — `observe`,
-`resolve`, `act`, `evaluate`, `release_control`, `reacquire_control` — and the whole heterogeneity
-story rests on it.
-
-**Observations are accessibility trees, never markup.** An HTML string is a web fact; a tree of
-roles, names and values is something a browser, a screen reader and a Win32 window can all
-produce. A test asserts the rendered observation contains no tags. Markup appears in exactly one
-place — a DOM dump on failure — because it is useless for deciding what to do and invaluable for
-working out afterwards why something broke.
-
-**The model never writes a selector.** The surface enumerates what is on screen and computes a
-locator ladder per candidate; the model picks an index. It chooses *which* control, the surface
-decides *how to name it*. A model that can emit arbitrary selectors emits what it imagines the
-markup looks like, which on a legacy screen is usually fiction.
-
-Trade-off: this is single-process and single-operator, deliberately. Every seam that would need to
-become a service — intervention queue, artifact store, catalog — is already an interface.
+Two decisions hold the `surface/` seam, and both are argued where they are enforced
+(`surface/base.py`, `surface/inventory.py`). **Observations are accessibility trees, never markup**
+— a tree of roles, names and values is something a browser, a screen reader and a Win32 window can
+all produce, and a test asserts the rendered observation carries no tags. **The model never writes
+a selector** — the surface enumerates candidates with a ranked locator ladder each and the model
+picks an index, so it chooses *which* control while the surface decides *how to name it*.
 
 ## 2. Artifact schema
 
@@ -107,28 +98,25 @@ one vendor release from failing and passes every test until it does.
 
 ## 4. Heterogeneity & multi-tenant
 
-**Surface abstraction.** Extending to a desktop app means writing one more `Surface`. Nothing in
-the schema or the engine mentions a browser: steps address controls by role, name and layout
-relationships, all of which a desktop accessibility API supplies. The two web-specific pieces —
-`SelectorLocator` and `html_of()` — are the ladder's last resort and a failure-only dump. The
-honest limit is coordinates: recorded as tier 6, never exercised, and the tier that would matter
-most on a screenshot-only surface.
+**Surface abstraction.** Extending to a desktop app means writing one more `Surface`, touching
+neither the schema nor the engine: steps address controls by role, name and layout relationships,
+all of which a desktop accessibility API supplies. The two web-specific pieces — `SelectorLocator`
+and `html_of()` — are the ladder's last resort and a failure-only dump. The honest limit is
+coordinates: recorded as tier 6, never exercised, and the tier that would matter most on a
+screenshot-only surface.
 
-**Nothing in the engine knows which product it is driving.** Product knowledge — the screen text
-meaning a session expired or the application fell over, the business outcomes a capability can
-legitimately reach, the interstitials worth recovering from — is declared per product and carried
-by the artifact. None of it is held in the engine, because every vendor spells these differently:
-an engine carrying one product's error codes classifies correctly against that product and
-silently stops classifying against all the others. A product that declares nothing gets no
-reclassification, which is honest degradation rather than confident mislabelling. A test strips
-the declaration and asserts the answer changes, so the strings cannot creep back.
+**Nothing in the engine knows which product it is driving.** The text meaning a session expired,
+the outcomes a capability can legitimately reach, the interstitials worth recovering from — all
+declared per product and carried by the artifact, because every vendor spells them differently and
+an engine holding one product's error codes silently stops classifying against every other. A
+product that declares nothing gets no reclassification: honest degradation rather than confident
+mislabelling, and a test strips the declaration to prove the answer changes.
 
-**Multi-tenant.** A capability is recorded once and *specialised* per tenant by a thin override
-layer. An override may change the entry point, a target, a checkpoint, an outcome detector. It may
-**not** change steps, inputs or outputs — those are the contract, and letting an override alter
-what `lookup_balance` does means a caller can no longer rely on what the name means. Enforced by
-re-deriving the contract afterwards and refusing anything that moved. A tenant needing a different
-flow needs a different capability.
+**Multi-tenant.** A capability is recorded once and *specialised* per tenant by overrides that may
+change the entry point, a target, a checkpoint or an outcome detector — never the steps, inputs or
+outputs, which are the contract (`artifact/overrides.py`). `apply_override` re-derives that
+contract afterwards and refuses anything that moved, so a tenant needing a different flow needs a
+different capability.
 
 Demonstrated, not asserted: the Northgate variant renames the member field, the search button, the
 balance column and the form field, and mounts the product under `/tlr` — each breaking a different
@@ -137,84 +125,73 @@ succeeds at the tiers it was recorded at.
 
 ## 5. Escalation & handoff
 
-**Detecting stuck.** Discovery: max steps, a repeated identical decision, or the model calling
-`give_up`. Replay: a step policy will not take unattended, an expired session, a checkpoint that
-will not come true, a vanished control. Deliberately *not* escalated: a caller's malformed
-argument, which nobody can fix, and a business outcome, which is a correct answer. Paging for
-either teaches operators to ignore the queue.
+**Detecting stuck.** Discovery: max steps, a repeated identical decision, or `give_up`. Replay: a
+step policy will not take unattended, an expired session, a checkpoint that will not come true, a
+vanished control. Deliberately *not* escalated: a malformed argument nobody can fix, and a business
+outcome, which is a correct answer — paging for either teaches operators to ignore the queue.
 
-**Taking control.** One explicit holder — `automation` or `operator` — every transition logged.
-Not a lock, not two booleans that can disagree. The browser context is never torn down, so "the
+**Control transfer.** One explicit holder, `automation` or `operator`, every transition logged —
+not a lock, not two booleans that can disagree. The browser context is never torn down, so "the
 human operates the same session" is structural: same cookies, same server-side session, same page.
 Escalation **blocks**; a run that raises a request and carries on has not escalated, it has logged.
+On hand-back the checkpoint is re-asserted rather than assumed, the entire point of a checkpoint
+being not to trust that we are where we think we are.
 
-**Handing back.** The operator resumes from the console, automation reacquires, and the checkpoint
-is re-asserted rather than assumed — the entire point of a checkpoint is not to trust that we are
-where we think we are.
-
-**Recording what they did** is captured, not self-reported: a capture-phase listener in every frame
-reports clicks, changes and Enter presses. It records *which control was touched, never what was
-typed* — an operator handling a bank escalation is often typing exactly the data this system must
-not persist.
-
-The console is bare and does not stream the screen. The browser is headed and the operator is in
-front of it; streaming pixels would be a nicer product and a worse demonstration of the mechanism.
+**What the human did** is captured, not self-reported: a capture-phase listener in every frame
+reports clicks, changes and Enter presses, recording *which control was touched, never what was
+typed*. The console is deliberately bare and does not stream the screen — the browser is headed and
+the operator is sitting in front of it.
 
 ## 6. Safety
 
-**Default-deny.** A missing or empty allowlist permits nothing; the CLI refuses to start without a
-policy file rather than falling back to permissive.
-
-**Enforcement is not optional.** The allowlist lives inside `Surface.act`, the risk gate inside the
-executor, so discovery, replay, recovery rules and the HTTP catalog are covered without knowing the
-guardrails exist. A control checked by its callers is one that a future caller forgets. Deny beats
-allow, because a deny rule exists precisely when a general rule was too generous.
+**Default-deny, enforced structurally.** A missing or empty allowlist permits nothing, and the CLI
+refuses to start without a policy file rather than falling back to permissive. The allowlist lives
+inside `Surface.act` and the risk gate inside the executor, so discovery, replay, recovery rules and
+the HTTP catalog are all covered without knowing the guardrails exist — a guardrail checked by its
+callers is one a future caller forgets. Deny beats allow, because a deny rule exists precisely when
+a general rule was too generous. Each guardrail below is argued at length under `policy/`.
 
 **Three risk classes, not a slider.** `safe` proceeds; `risky` needs approval or an explicit opt-in;
-`irreversible` is **blocked by default**. `--allow-risky` does not imply `--allow-irreversible` —
-committing money is not "more of" creating a record. Blocking rather than prompting makes the
-safety valve and the human-in-the-loop path the *same* mechanism instead of two that can disagree,
-and a confirmation flag would move the decision to whoever wrote the calling code. Refusal happens
-before a browser opens, so a blocked run leaves the application untouched.
+`irreversible` is **blocked by default**, and `--allow-risky` does not imply `--allow-irreversible`
+— committing money is not "more of" creating a record. Blocking rather than prompting makes the
+safety valve and the human-in-the-loop path the same mechanism. Refusal happens before a browser
+opens, so a blocked run leaves the application untouched.
 
 **Redaction in two layers.** Explicit masks cover values we were handed; shape-based patterns cover
-what appears on screen and lands in an observation dump. Screenshots are masked too — a screenshot
-is pixels. Short digit strings are deliberately left alone: a member ID is the caller's argument,
-not a secret, and a redactor that eats every identifier makes debugging impossible while protecting
-nothing.
+what appears on screen and lands in an observation dump — or in a screenshot, which is pixels and is
+masked too. Short digit strings are deliberately left alone: a member ID is the caller's argument,
+not a secret.
 
 **Limits.** The allowlist is host-and-path based, so it cannot distinguish a legitimate
 `POST /member/12345/subaccount` from a malicious one. Risk is classified at record time from
 observable signals — a step answering a confirmation dialog is treated as irreversible — a good
-heuristic, not a guarantee; an application that commits without asking would be classified `risky`.
+heuristic, not a guarantee: an application that commits without asking would be classified `risky`.
 The redaction patterns are narrow and will miss institution-specific formats. And nothing defends
 against a *compromised artifact*: an approved capability is trusted, so artifact review is a real
-control — which is why the schema works so hard to keep them readable.
+control, which is why the schema works so hard to keep them readable.
 
 ## 7. Cuts
 
-**Not built, deliberately.** A desktop `Surface` (designed and argued, only web ships). A real
-co-browsing console (out of scope; the control transfer is real, the chrome is not). Multi-tenant
-infrastructure — no registry, no per-tenant deployment; the *artifact* is designed for reuse, the
-plumbing is not. Stretch goals not chosen: multi-run flakiness scoring, code generation, and
-assisted LLM fallback — the last would muddy the "no model in the replay loop" claim determinism
-rests on. `LabelAdjacentLocator` supports right/left/same-row and returns `None` for above/below
-rather than guessing at column arithmetic.
+**Not built, deliberately.** A real co-browsing console, and multi-tenant infrastructure — no
+registry, no per-tenant deployment; the *artifact* is designed for reuse, the plumbing is not.
+Stretch goals declined: multi-run flakiness scoring, code generation, and assisted LLM fallback,
+the last of which would muddy the "no model in the replay loop" claim determinism rests on.
+`LabelAdjacentLocator` returns `None` for above/below rather than guessing at column arithmetic.
 
 **Next, in order.**
 
-1. **Approval workflow with reliability scoring.** The schema carries `draft`/`approved` and a
+1. **A desktop surface**, to prove the seam rather than argue it. The accessibility-tree bet is the
+   load-bearing claim here, and the one thing reasoned rather than demonstrated.
+2. **Approval workflow with reliability scoring.** The schema carries `draft`/`approved` and a
    replay counter; nothing moves a capability between them. Auto-promotion after N clean replays
-   makes the guardrail self-maintaining instead of manual.
-2. **A drift dashboard.** The tier comparison is the right signal and currently only appears in a
-   run log. Across hundreds of tenants it wants to be a ranked list of capabilities sliding down
-   the ladder.
-3. **A desktop surface**, to prove the seam rather than argue it. The accessibility-tree bet is the
-   load-bearing architectural claim here and the one thing reasoned rather than demonstrated.
+   makes the guardrail self-maintaining.
+3. **A drift dashboard.** The tier comparison is the right signal and currently only reaches a run
+   log; across hundreds of tenants it wants to be a ranked list of capabilities sliding down the
+   ladder.
 4. **Shared sub-flows.** Both capabilities duplicate a search prefix.
 
-**One thing I got wrong.** A real `gpt-5` run offered `"4,211.03"` — the balance itself — as proof
-of success (`evidence/discovery-20260906T091017Z`). True for member 12345, false for everyone else;
-a capability asserting it would pass once and fail forever. Synthesis now substitutes stable screen
-text, records why, and refuses outright when none exists. The model cannot easily see this; the loop can, because it knows which
-values were parameters and which were outputs.
+**One thing I got wrong.** A real `gpt-5` run offered `"4,211.03"` — the balance it had just read —
+as proof of success (`evidence/discovery-20260906T091017Z`): true for member 12345, false for
+everyone else, so a capability asserting it would pass once and fail forever. The loop catches what
+the model cannot, because it knows which values were parameters and which were outputs; synthesis
+substitutes stable screen text, records why, and refuses outright when there is none.
