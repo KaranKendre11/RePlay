@@ -110,6 +110,14 @@ def discover(
         typer.Option("--save-as", help="Synthesise the run into a capability with this name."),
     ] = None,
     profile: Annotated[Path | None, typer.Option("--profile", help=PROFILE_HELP)] = None,
+    policy_file: Annotated[Path, typer.Option("--policy", help="Allowlist file.")] = Path(
+        "policy.toml"
+    ),
+    escalate: Annotated[
+        bool,
+        typer.Option("--escalate", help="Open the operator console and route a stuck run there."),
+    ] = False,
+    console_port: Annotated[int, typer.Option("--console-port")] = 8765,
 ) -> None:
     """Run the LLM-driven discovery loop against a live application.
 
@@ -117,8 +125,16 @@ def discover(
     replay, the capability catalog — runs without a model.
     """
     from replay.agent import DiscoveryLoop, LLMError, OpenAIClient, StopReason
+    from replay.escalation import ConsoleEscalation, InterventionQueue, serve_console
     from replay.evidence import EvidenceRecorder, new_run_id
     from replay.surface import WebSurface
+
+    # First, and before a model is even constructed. Discovery is the one path
+    # where the agent chooses where to go — its vocabulary includes a navigate
+    # tool taking a free-form URL — so it is the path that most needs a
+    # boundary, and a missing policy file has to stop the run rather than widen
+    # it. Refusing here also means a misconfigured run costs nothing.
+    allowlist = _load_allowlist(policy_file)
 
     try:
         llm = OpenAIClient(model=model)
@@ -126,12 +142,21 @@ def discover(
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from exc
 
+    handler = None
+    if escalate:
+        queue = InterventionQueue()
+        serve_console(queue, port=console_port)
+        handler = ConsoleEscalation(queue)
+        typer.secho(f"operator console: http://127.0.0.1:{console_port}", fg=typer.colors.MAGENTA)
+
     run_id = new_run_id("discovery")
     typer.secho(f"run {run_id}  model {llm.name}", fg=typer.colors.CYAN)
 
     with (
         EvidenceRecorder(run_id, root=evidence_dir) as recorder,
-        WebSurface(headed=headed) as surface,
+        # Headed whenever a human might be asked to take over: they act in the
+        # real window, on the same session.
+        WebSurface(headed=headed or escalate, allowlist=allowlist) as surface,
     ):
         loop = DiscoveryLoop(
             surface,
@@ -140,6 +165,7 @@ def discover(
             max_steps=max_steps,
             timeout_s=timeout,
             vision=vision,
+            escalation=handler,
         )
         result = loop.run(goal, target)
 
