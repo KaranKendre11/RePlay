@@ -1,5 +1,5 @@
 {
-  "capability": "«redacted»",
+  "capability": "lookup_balance@1.1.0",
   "run_id": "replay-03-hard-failure",
   "status": "failed",
   "outputs": {},
@@ -16,14 +16,14 @@
       "surface_error": "TargetNotFound: could not resolve 'Member ID field': no attached frame named 'workframe'; available: []"
     }
   },
-  "duration_ms": 10255,
+  "duration_ms": 10161,
   "evidence_dir": "evidence/replay-03-hard-failure",
   "escalation": {
-    "id": "84ac306d1f55",
+    "id": "7373ac74a2d6",
     "run_id": "replay-03-hard-failure",
-    "capability": "«redacted»",
+    "capability": "lookup_balance@1.1.0",
     "reason": "hard_failure",
-    "summary": "«redacted» stopped at step s2: application error. Expected the application to respond.",
+    "summary": "lookup_balance@1.1.0 stopped at step s2: application error. Expected the application to respond.",
     "step_id": "s2",
     "step_intent": "Enter the member id field.",
     "observed": "MERIDIAN CORE  ·  MSG0001\nAPPLICATION ERROR\nCode\tSYS-500\nDetail\tUnhandled exception in transaction processor. Contact support.",
@@ -68,11 +68,11 @@
         "wait"
       ]
     },
-    "created_at": "2026-09-07T01:54:58.514243+00:00",
+    "created_at": "2026-09-07T02:34:08.100534+00:00",
     "status": "resolved",
     "resolution": "aborted",
     "operator_note": "no escalation handler configured",
-    "resolved_at": "2026-09-07T01:54:58.522471+00:00",
+    "resolved_at": "2026-09-07T02:34:08.107256+00:00",
     "human_actions": []
   },
   "locator_tiers": {},
@@ -90,7 +90,7 @@
       "locator_kind": null,
       "ambiguous": false,
       "recovered": [],
-      "duration_ms": 10,
+      "duration_ms": 6,
       "error": null
     },
     {
@@ -104,7 +104,7 @@
       "locator_kind": null,
       "ambiguous": false,
       "recovered": [],
-      "duration_ms": 10131,
+      "duration_ms": 10028,
       "error": "TargetNotFound: could not resolve 'Member ID field': no attached frame named 'workframe'; available: []"
     }
   ]

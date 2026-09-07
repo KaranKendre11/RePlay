@@ -125,17 +125,21 @@ succeeds at the tiers it was recorded at.
 
 ## 5. Escalation & handoff
 
-**Detecting stuck.** Discovery: max steps, a repeated identical decision, or `give_up`. Replay: a
-step policy will not take unattended, an expired session, a checkpoint that will not come true, a
-vanished control. Deliberately *not* escalated: a malformed argument nobody can fix, and a business
-outcome, which is a correct answer — paging for either teaches operators to ignore the queue.
+**Detecting stuck.** Discovery: `give_up`, a repeated identical decision, or a model error. Replay:
+a step policy will not take unattended, an expired session, a checkpoint that will not come true, a
+vanished control. All of them reach a person. Deliberately *not* escalated: a malformed argument
+nobody can fix, a business outcome, which is a correct answer, and a spent step or time budget —
+paging for any of them teaches operators to ignore the queue.
 
 **Control transfer.** One explicit holder, `automation` or `operator`, every transition logged —
 not a lock, not two booleans that can disagree. The browser context is never torn down, so "the
 human operates the same session" is structural: same cookies, same server-side session, same page.
 Escalation **blocks**; a run that raises a request and carries on has not escalated, it has logged.
-On hand-back the checkpoint is re-asserted rather than assumed, the entire point of a checkpoint
-being not to trust that we are where we think we are.
+On hand-back the step is judged as if we had performed it — outcome first, then the checkpoint,
+re-asserted rather than assumed — after waiting for the screen, because a person's click carries no
+navigation promise to wait on and control returns while their submit is still in flight. A stuck
+discovery resumes the same way, then warns that a human did part of the work: those steps are not
+in the trace synthesis reads, so the result is not a replayable capability.
 
 **What the human did** is captured, not self-reported: a capture-phase listener in every frame
 reports clicks, changes and Enter presses, recording *which control was touched, never what was
@@ -144,11 +148,14 @@ the operator is sitting in front of it.
 
 ## 6. Safety
 
-**Default-deny, enforced structurally.** A missing or empty allowlist permits nothing, and the CLI
-refuses to start without a policy file rather than falling back to permissive. The allowlist lives
-inside `Surface.act` and the risk gate inside the executor, so discovery, replay, recovery rules and
-the HTTP catalog are all covered without knowing the guardrails exist — a guardrail checked by its
-callers is one a future caller forgets. Deny beats allow, because a deny rule exists precisely when
+**Default-deny, enforced structurally.** A missing or empty allowlist permits nothing, and every
+command that opens a surface — `discover`, `run`, `serve` — refuses to start without a policy file
+rather than falling back to permissive. The allowlist lives inside `Surface.act` and the risk gate
+inside the executor, so discovery, replay, recovery rules and the HTTP catalog are all covered
+without knowing the guardrails exist — a guardrail checked by its callers is one a future caller
+forgets. Discovery matters most there, being the one path where a model rather than a recording
+chooses the URL: a refused entry point stops the run, while a destination the model chose becomes a
+line in its action log, so it sees the boundary and routes around it. Deny beats allow, because a deny rule exists precisely when
 a general rule was too generous. Each guardrail below is argued at length under `policy/`.
 
 **Three risk classes, not a slider.** `safe` proceeds; `risky` needs approval or an explicit opt-in;
@@ -177,6 +184,9 @@ registry, no per-tenant deployment; the *artifact* is designed for reuse, the pl
 Stretch goals declined: multi-run flakiness scoring, code generation, and assisted LLM fallback,
 the last of which would muddy the "no model in the replay loop" claim determinism rests on.
 `LabelAdjacentLocator` returns `None` for above/below rather than guessing at column arithmetic.
+And folding an operator's manual steps into the artifact when they unstick a discovery — a
+capability part-discovered and part-demonstrated is the interesting version, and a much bigger
+change; the run warns instead.
 
 **Next, in order.**
 

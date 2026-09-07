@@ -1,0 +1,23 @@
+{
+  "rendered": "MERIDIAN CORE  ·  NAV0001\nMember Inquiry\nAccount Services\nTransaction Journal\nReports\nTELLER\tTLR0431\nSESSION\t5d79e975\nMERIDIAN CORE  ·  ACS0400\nOPEN SUB-ACCOUNT   DELORES A HARTWELL\nProduct Code\t\n(select)\nS02 - REGULAR SAVINGS\nS07 - HOLIDAY CLUB\nS11 - YOUTH SAVINGS\n\nOpening Deposit\t\nNickname\t\n\t",
+  "url": "http://127.0.0.1:8080/",
+  "title": "MERIDIAN CORE",
+  "http_status": 200,
+  "dialogs_seen": [],
+  "frames": [
+    {
+      "path": [
+        "navframe"
+      ],
+      "url": "http://127.0.0.1:8080/nav",
+      "aria": "- text: MERIDIAN CORE · NAV0001\n- table:\n  - rowgroup:\n    - row \"Member Inquiry\":\n      - cell \"Member Inquiry\":\n        - link \"Member Inquiry\":\n          - /url: /search\n    - row \"Account Services\":\n      - cell \"Account Services\":\n        - link \"Account Services\":\n          - /url: /search\n    - row \"Transaction Journal\":\n      - cell \"Transaction Journal\":\n        - link \"Transaction Journal\":\n          - /url: \"#\"\n    - row \"Reports\":\n      - cell \"Reports\":\n        - link \"Reports\":\n          - /url: \"#\"\n- table:\n  - rowgroup:\n    - row \"TELLER TLR0431\":\n      - cell \"TELLER\"\n      - cell \"TLR0431\"\n    - row \"SESSION 5d79e975\":\n      - cell \"SESSION\"\n      - cell \"5d79e975\""
+    },
+    {
+      "path": [
+        "workframe"
+      ],
+      "url": "http://127.0.0.1:8080/member/12345/subaccount/new",
+      "aria": "- text: MERIDIAN CORE · ACS0400\n- table:\n  - rowgroup:\n    - row \"OPEN SUB-ACCOUNT DELORES A HARTWELL\":\n      - cell \"OPEN SUB-ACCOUNT DELORES A HARTWELL\"\n    - row \"Product Code S02 - REGULAR SAVINGS\":\n      - cell \"Product Code\"\n      - cell \"S02 - REGULAR SAVINGS\":\n        - combobox:\n          - option \"(select)\"\n          - option \"S02 - REGULAR SAVINGS\" [selected]\n          - option \"S07 - HOLIDAY CLUB\"\n          - option \"S11 - YOUTH SAVINGS\"\n    - row \"Opening Deposit 50.00\":\n      - cell \"Opening Deposit\"\n      - cell \"50.00\":\n        - textbox: \"50.00\"\n    - row \"Nickname\":\n      - cell \"Nickname\"\n      - cell:\n        - textbox\n    - row \"Submit\":\n      - cell\n      - cell \"Submit\":\n        - button \"Submit\""
+    }
+  ]
+}

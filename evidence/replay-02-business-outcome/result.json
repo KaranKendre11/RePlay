@@ -1,5 +1,5 @@
 {
-  "capability": "«redacted»",
+  "capability": "lookup_balance@1.1.0",
   "run_id": "replay-02-business-outcome",
   "status": "business_outcome",
   "outputs": {},
@@ -9,7 +9,7 @@
     "detected_at_step": "s3"
   },
   "failure": null,
-  "duration_ms": 110,
+  "duration_ms": 113,
   "evidence_dir": "evidence/replay-02-business-outcome",
   "escalation": null,
   "locator_tiers": {
@@ -32,7 +32,7 @@
       "locator_kind": null,
       "ambiguous": false,
       "recovered": [],
-      "duration_ms": 13,
+      "duration_ms": 14,
       "error": null
     },
     {
@@ -60,7 +60,7 @@
       "locator_kind": "role_name",
       "ambiguous": false,
       "recovered": [],
-      "duration_ms": 42,
+      "duration_ms": 43,
       "error": null
     }
   ]
