@@ -243,9 +243,7 @@ class ReplayExecutor:
         # a surface that can cover them. One that cannot has already said so, in
         # the run log, naming these inputs.
         cover = (
-            self.surface.mask_in_screenshots
-            if isinstance(self.surface, MasksScreenshots)
-            else None
+            self.surface.mask_in_screenshots if isinstance(self.surface, MasksScreenshots) else None
         )
         for spec in self.artifact.inputs:
             if not spec.sensitive:
