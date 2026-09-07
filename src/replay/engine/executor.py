@@ -120,6 +120,16 @@ def rebase(url: str, base: str) -> str:
     )
 
 
+#: What was really expected, once the screen has overruled the step-level
+#: diagnosis. Phrased like the ``SurfaceError`` handler in :meth:`run`, because
+#: it is the same kind of statement: the failure is about the far side being
+#: unavailable, not about the control we happened to be reaching for.
+SCREEN_EXPECTATION = {
+    FailureClass.APPLICATION_ERROR: "the application to respond",
+    FailureClass.SESSION_LOST: "the session to still be valid",
+}
+
+
 class InvalidArguments(ValueError):
     """The caller's arguments do not satisfy the capability's declared inputs."""
 
@@ -480,27 +490,47 @@ class ReplayExecutor:
         and the application being broken. A vanished control means drift; a 500
         means the far side fell over; an expired session means neither, and
         needs a human or a re-login rather than a retry.
+
+        When the screen decides the class, it also tells the story. Taking the
+        class from the screen and the narrative from the exception produced
+        exactly one thing worth avoiding — a failure labelled
+        ``application_error`` that read "could not resolve 'Member ID field'",
+        which is what a drifted locator looks like and sends the reader to the
+        wrong place entirely. The exception is still true and still kept; it is
+        just no longer the headline.
         """
         error = report.error or ""
         observed = self._observed()
 
         if "refused" in error:
+            from_screen = None
             failure_class = FailureClass.POLICY_REFUSED
         else:
-            failure_class = self._classify_screen(observed)
-        if failure_class is None:
-            failure_class = (
+            from_screen = self._classify_screen(observed)
+            failure_class = from_screen or (
                 FailureClass.TARGET_NOT_FOUND
                 if TargetNotFound.__name__ in error
                 else FailureClass.ACTION_FAILED
             )
 
+        evidence = self._capture(step.id)
+        if from_screen is None:
+            expected, detail = step.intent, error or observed[:400]
+        else:
+            # The step's own intent is no longer what was expected either. We
+            # did want to enter the member id, but only in the sense that a
+            # 500 stopped us from getting to a screen that has the field on it.
+            expected = SCREEN_EXPECTATION.get(from_screen, "the application to respond")
+            detail = observed[:400]
+            if error:
+                evidence["surface_error"] = error
+
         return Failure(
             step_id=step.id,
             failure_class=failure_class,
-            expected=step.intent,
-            observed=error or observed[:400] or "no further detail",
-            evidence=self._capture(step.id),
+            expected=expected,
+            observed=detail or error or "no further detail",
+            evidence=evidence,
         )
 
     def _extract_outputs(self) -> dict[str, str]:
