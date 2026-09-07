@@ -15,6 +15,7 @@ import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from secrets import token_hex
 from typing import Any
 
 from replay.policy.redaction import Redactor
@@ -23,7 +24,15 @@ DEFAULT_ROOT = Path("evidence")
 
 
 def new_run_id(prefix: str) -> str:
-    return f"{prefix}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+    """An id no other run can share.
+
+    Second resolution was not enough: a replay takes ~150 ms, so back-to-back
+    runs landed in one directory and overwrote each other's result and
+    screenshots. Microseconds keep the ids in run order; the random suffix is
+    what makes them unique rather than merely unlikely to repeat, which matters
+    now that a shared directory is refused rather than silently merged.
+    """
+    return f"{prefix}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S.%f')}Z-{token_hex(3)}"
 
 
 class EvidenceRecorder:
@@ -38,6 +47,16 @@ class EvidenceRecorder:
     ) -> None:
         self.run_id = run_id
         self.dir = Path(root) / run_id
+        # A run id names one run. Recording a second run into an existing
+        # directory leaves a log describing two runs beside a result.json
+        # describing one, and screenshots from whichever ran last — so re-using
+        # a --label is refused, as ArtifactStore.save refuses to clobber a
+        # published version. Generated ids are unique and never reach this.
+        if self.dir.exists() and any(self.dir.iterdir()):
+            raise FileExistsError(
+                f"{self.dir} already holds a run; delete it or choose another "
+                f"label rather than recording two runs into one directory"
+            )
         self.steps_dir = self.dir / "steps"
         self.obs_dir = self.dir / "observations"
         for directory in (self.dir, self.steps_dir, self.obs_dir):

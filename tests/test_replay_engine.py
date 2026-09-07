@@ -24,7 +24,7 @@ from replay.engine import (
     bind_parameters,
     rebase,
 )
-from replay.evidence import EvidenceRecorder
+from replay.evidence import EvidenceRecorder, new_run_id
 from replay.surface import WebSurface
 
 CAPABILITY = "lookup_balance"
@@ -257,6 +257,54 @@ def test_evidence_is_written_for_every_replay(executor):
     assert (recorder_dir / "run.jsonl").exists()
     assert json.loads((recorder_dir / "result.json").read_text())["status"] == "success"
     assert result.evidence_dir == str(recorder_dir)
+
+
+def test_generated_run_ids_do_not_collide():
+    """The root cause of #50, pinned without waiting on a clock.
+
+    A second-resolution id gave one value here, so five replays produced three
+    directories and two of them each held two runs.
+    """
+    ids = {new_run_id("replay") for _ in range(1000)}
+    assert len(ids) == 1000
+
+
+def test_back_to_back_replays_get_separate_evidence_directories(
+    meridian_server, artifact, tmp_path
+):
+    """Two runs started in immediate succession, two complete directories.
+
+    Not merely two directories: two results, and neither log carrying the
+    other's events. A collided directory used to lose the first run's
+    result.json and screenshots while keeping its log lines, so a reviewer read
+    two runs' events under a result describing one of them.
+    """
+    with WebSurface() as surface:
+        for _ in range(2):
+            with EvidenceRecorder(new_run_id("replay"), root=tmp_path) as recorder:
+                result = ReplayExecutor(
+                    surface, artifact, recorder=recorder, base_url=meridian_server
+                ).run({"member_id": "12345"})
+                assert result.status is ReplayStatus.SUCCESS
+
+    directories = sorted(p for p in tmp_path.iterdir() if p.is_dir())
+    assert len(directories) == 2
+
+    for directory in directories:
+        assert json.loads((directory / "result.json").read_text())["run_id"] == directory.name
+        events = [json.loads(line) for line in (directory / "run.jsonl").read_text().splitlines()]
+        finished = [e for e in events if e["kind"] == "replay_finished"]
+        assert len(finished) == 1
+        assert finished[0]["run_id"] == directory.name
+
+
+def test_recording_twice_into_one_run_id_is_refused(tmp_path):
+    """Re-using a --label means "produce this again", not "add to it"."""
+    with EvidenceRecorder("replay-labelled", root=tmp_path) as recorder:
+        recorder.event("replay_finished", status="success")
+
+    with pytest.raises(FileExistsError, match="already holds a run"):
+        EvidenceRecorder("replay-labelled", root=tmp_path)
 
 
 def test_the_result_serialises_for_a_calling_agent(executor):
