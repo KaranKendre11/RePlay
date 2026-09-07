@@ -22,4 +22,7 @@ test-results/
 # macOS
 .DS_Store
 
+# Served runs — ad-hoc agent traffic, not part of the curated evidence/ set
+runs/
+
 # NOTE: artifacts/ and evidence/ are deliverables — intentionally NOT ignored.

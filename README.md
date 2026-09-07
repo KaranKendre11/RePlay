@@ -128,7 +128,9 @@ curl -s -XPOST localhost:8000/capabilities/lookup_balance:invoke \
      -d '{"arguments": {"member_id": "12345"}}'
 ```
 
-Catalog at `/capabilities`, operator console at `/operator`.
+Catalog at `/capabilities`, operator console at `/operator`. Served invocations write
+their evidence to `runs/` (gitignored), not to the curated `evidence/` set — pass
+`--evidence-dir` to put it somewhere else.
 
 ---
 

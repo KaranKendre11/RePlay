@@ -474,6 +474,7 @@ def serve(
     host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port")] = 8000,
     policy_file: Annotated[Path, typer.Option("--policy")] = Path("policy.toml"),
+    evidence_dir: Annotated[Path, typer.Option("--evidence-dir")] = Path("runs"),
     headed: Annotated[
         bool, typer.Option("--headed", help="Show the browser, so an operator can take over.")
     ] = False,
@@ -489,7 +490,9 @@ def serve(
     _load_allowlist(policy_file)
     typer.secho(f"catalog:  http://{host}:{port}/capabilities", fg=typer.colors.CYAN)
     typer.secho(f"operator: http://{host}:{port}/operator", fg=typer.colors.MAGENTA)
-    run_server(host=host, port=port, policy_file=policy_file, headed=headed)
+    run_server(
+        host=host, port=port, policy_file=policy_file, evidence_dir=evidence_dir, headed=headed
+    )
 
 
 @app.command()

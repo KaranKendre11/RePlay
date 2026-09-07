@@ -9,6 +9,8 @@ endpoint responds.
 asks for: "show one being invoked".
 """
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -130,6 +132,26 @@ def test_a_malfunction_is_an_http_error(client, meridian_server):
 
     assert response.status_code == 422
     assert response.json()["failure"]["class"] == "invalid_input"
+
+
+def test_served_evidence_lands_where_the_server_was_told(tmp_path, monkeypatch, meridian_server):
+    """And by default that is `runs/`, never the committed `evidence/`.
+
+    `evidence/` is a curated deliverable and it is what the approval tally is
+    read from, so a `curl` against the catalog must not dirty it or move the
+    numbers that decide whether a capability runs unattended.
+    """
+    artifacts = Path("artifacts").resolve()
+    monkeypatch.chdir(tmp_path)
+    served = TestClient(create_api(artifacts_dir=artifacts, allowlist=TEST_ALLOWLIST))
+
+    served.post(
+        f"/capabilities/{CAPABILITY}:invoke",
+        json={"arguments": {"member_id": "12345"}, "target": meridian_server},
+    )
+
+    assert list((tmp_path / "runs").glob("invoke-*/run.jsonl"))
+    assert not (tmp_path / "evidence").exists()
 
 
 # ---------- the guardrails still apply ----------
