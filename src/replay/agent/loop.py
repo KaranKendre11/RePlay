@@ -564,9 +564,7 @@ class DiscoveryLoop:
             # inside, and does not "fix" the run by going somewhere policy would
             # have refused.
             allowlist=(
-                self.surface.allowlist.describe()
-                if self.surface.allowlist is not None
-                else None
+                self.surface.allowlist.describe() if self.surface.allowlist is not None else None
             ),
         )
         self.recorder.event("escalation_raised", **request.to_dict())

@@ -341,9 +341,7 @@ def test_a_minimal_surface_replays_a_recorded_capability_end_to_end(artifact, tm
     assert result.locator_tiers == {"s2": 1, "s3": 1, "s4": 1}, "drift reporting still works"
 
 
-def test_a_minimal_surface_can_still_tell_a_lost_session_from_a_drifted_locator(
-    artifact, tmp_path
-):
+def test_a_minimal_surface_can_still_tell_a_lost_session_from_a_drifted_locator(artifact, tmp_path):
     """The failure #41 is really about.
 
     ``text_of`` used to be reached for with ``getattr`` and fell back to ``""``,

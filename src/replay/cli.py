@@ -512,9 +512,7 @@ def synthesize(
     from replay.agent.loop import DiscoveryResult
 
     payload = json.loads((evidence_dir / "result.json").read_text())
-    _synthesise_and_save(
-        DiscoveryResult.from_dict(payload), name, version=version, profile=profile
-    )
+    _synthesise_and_save(DiscoveryResult.from_dict(payload), name, version=version, profile=profile)
 
 
 def _synthesise_and_save(
