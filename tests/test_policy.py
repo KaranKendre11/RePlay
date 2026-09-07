@@ -252,6 +252,41 @@ def test_identifiers_are_deliberately_not_redacted():
     assert Redactor().scrub("member 12345 branch 0042") == "member 12345 branch 0042"
 
 
+@pytest.mark.parametrize(
+    "ref",
+    ["lookup_balance@1.1.0", "open_subaccount@1.0.0", "x@2.10.3"],
+)
+def test_a_capability_ref_survives_redaction(ref):
+    """``name@version`` is not an email address, however much it looks like one.
+
+    It read as one for a long time, and the cost was invisible: every capability
+    name in every committed evidence file came out ``«redacted»``, so a reviewer
+    could not tell which capability a run had exercised. Worse, an intervention
+    request opens with the ref — an operator being asked to take over a live run
+    was told that ``«redacted»`` had stopped at step s7.
+    """
+    assert Redactor().scrub(ref) == ref
+    assert "email" not in Redactor().findings(ref)
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "teller@northgate.example.com",
+        "first.last+tag@sub.example.co.uk",
+        "a@b.io",
+    ],
+)
+def test_real_addresses_are_still_scrubbed_whole(address):
+    """The other half of the same fix.
+
+    Narrowing a pattern is only safe if what it was there for still matches —
+    and matches *entirely*. A rule that redacted ``user@example.co`` and left
+    ``.uk`` behind would look like it worked.
+    """
+    assert Redactor().scrub(address) == REDACTED
+
+
 def test_an_explicit_mask_wins_over_pattern_matching():
     redactor = Redactor(["hunter2"])
     assert "hunter2" not in redactor.scrub("password is hunter2")

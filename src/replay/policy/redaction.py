@@ -31,7 +31,13 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("card", re.compile(r"\b(?:\d[ -]?){13,19}\b")),
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
     ("bearer", re.compile(r"\b(?:sk|pk|api|token)[-_][A-Za-z0-9_\-]{16,}\b", re.IGNORECASE)),
-    ("email", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b")),
+    # The final label must be letters. A capability ref is ``name@version``, and
+    # ``lookup_balance@1.1.0`` satisfied a numeric-tolerant TLD — so every
+    # capability name in every evidence file was being redacted, including the
+    # one an operator is shown when asked to take over a run. The optional
+    # middle group keeps multi-label domains whole: without it, redaction eats
+    # ``user@example.co`` and leaves ``.uk`` dangling.
+    ("email", re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-zA-Z]{2,}\b")),
 )
 
 
