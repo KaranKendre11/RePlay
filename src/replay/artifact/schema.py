@@ -398,15 +398,34 @@ class Provenance(Model):
 
 
 class Reliability(Model):
+    """How this version has behaved, and whether it is trusted unattended.
+
+    A *snapshot*, not a live counter. The running tally is derived from the
+    evidence directories by :mod:`replay.reliability`, so a replay does not
+    rewrite a published artifact just by running; these fields are stamped at
+    the moment a person approves the capability, and they are the citation for
+    that decision — what the approver was looking at when they made it.
+    """
+
     replays: int = Field(default=0, ge=0)
-    successes: int = Field(default=0, ge=0)
+    successes: int = Field(default=0, ge=0, description="Runs that completed every declared step.")
+    outcomes: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Runs that reached a declared business outcome. Successful invocations, "
+            "counted apart from successes because they exercise fewer steps."
+        ),
+    )
     last_verified_at: datetime | None = None
     approval: ApprovalState = ApprovalState.DRAFT
 
     @model_validator(mode="after")
-    def _successes_cannot_exceed_replays(self) -> Reliability:
-        if self.successes > self.replays:
-            raise ValueError("successes cannot exceed replays")
+    def _good_runs_cannot_exceed_replays(self) -> Reliability:
+        # A run is a success, a business outcome, or a failure — never two of
+        # them — so the two good kinds together are still bounded by the total.
+        if self.successes + self.outcomes > self.replays:
+            raise ValueError("successes and business outcomes together cannot exceed replays")
         return self
 
 

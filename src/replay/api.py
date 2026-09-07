@@ -91,9 +91,17 @@ def summarise(artifact: CapabilityArtifact) -> dict[str, Any]:
         "risk": artifact.max_step_risk.value,
         "requires_approval": artifact.policy.requires_approval,
         "approval": artifact.reliability.approval.value,
+        # The snapshot recorded when this version was last decided on, not a
+        # live count. The catalog is served from the artifacts directory and
+        # should answer identically for every caller; deriving the running
+        # tally here would make a read of the catalog depend on which evidence
+        # root the server happened to be started with. `replay approve` is
+        # where the live numbers are read, because that is where they change
+        # something.
         "reliability": {
             "replays": artifact.reliability.replays,
             "successes": artifact.reliability.successes,
+            "outcomes": artifact.reliability.outcomes,
         },
     }
 

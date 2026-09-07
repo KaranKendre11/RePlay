@@ -15,7 +15,7 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 
-from replay.artifact.schema import CapabilityArtifact
+from replay.artifact.schema import CapabilityArtifact, Reliability
 
 DEFAULT_ROOT = Path("artifacts")
 
@@ -80,6 +80,31 @@ class ArtifactStore:
             )
         self.root.mkdir(parents=True, exist_ok=True)
         path.write_text(serialize(artifact))
+        return path
+
+    def approve(self, name: str, version: str, reliability: Reliability) -> Path:
+        """Record an approval decision against an already-published version.
+
+        The single sanctioned in-place edit of a published artifact, and it is
+        narrow on purpose. ``save`` refuses to clobber because a caller that
+        pinned ``lookup_balance@1.0.0`` must keep getting the same behaviour —
+        and approving it does not change the behaviour. The steps, inputs,
+        outputs and policy are identical afterwards; what changed is that the
+        organisation has said it trusts them unattended. Publishing ``1.0.1``
+        instead would force every pinned caller to re-pin for a change that is
+        not one, and would make the semver advertise a difference that does not
+        exist.
+
+        So the artifact is re-read from disk and only its reliability block is
+        replaced. A caller cannot smuggle a step edit through here alongside an
+        approval, which is exactly the thing the immutability rule is defending
+        against, and the resulting diff is the reliability block and nothing
+        else — which is what makes it reviewable.
+        """
+        published = self.load(name, version)
+        updated = published.model_copy(update={"reliability": reliability})
+        path = self.path_for(name, version)
+        path.write_text(serialize(updated))
         return path
 
 
