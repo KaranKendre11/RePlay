@@ -1,0 +1,85 @@
+{
+  "base": "lookup_balance@1.1.0",
+  "tenant": "northgate",
+  "note": "Northgate FCU runs the same MERIDIAN product mounted at /tlr, with the member field relabelled 'Member Number', the search button relabelled 'Find', and the balance column headed 'Balance'. The flow is identical; only the naming and the mount point differ.",
+  "entry_url_pattern": "http://127.0.0.1:8081/tlr/",
+  "targets": {
+    "s2": {
+      "description": "Member Number input",
+      "rationale": "Same control, relabelled by this tenant. Role+name still leads in case the vendor ever supplies accessible names; label adjacency does the work, now anchored on 'Member Number'. The CSS fallback is retargeted too — this deployment renamed the field to f21.",
+      "frame_path": [
+        "workframe"
+      ],
+      "strategies": [
+        {
+          "kind": "role_name",
+          "role": "textbox",
+          "name": "Member Number",
+          "exact": true
+        },
+        {
+          "kind": "label_adjacent",
+          "label": "Member Number",
+          "relation": "right",
+          "control": "input"
+        },
+        {
+          "kind": "selector",
+          "engine": "css",
+          "expression": "input[name='f21']"
+        }
+      ]
+    },
+    "s3": {
+      "description": "Find button",
+      "rationale": "This tenant calls the search button 'Find'. Submit controls take their accessible name from the value attribute, so role+name still resolves at tier 1 once the name is corrected.",
+      "frame_path": [
+        "workframe"
+      ],
+      "strategies": [
+        {
+          "kind": "role_name",
+          "role": "button",
+          "name": "Find",
+          "exact": true
+        },
+        {
+          "kind": "selector",
+          "engine": "css",
+          "expression": "input[type='submit']"
+        }
+      ]
+    },
+    "s4": {
+      "description": "Balance on the SAVINGS row",
+      "rationale": "The row anchor is unchanged — account types come from the vendor, not the tenant — so only the column heading differs and the anchored-text strategy carries over as recorded.",
+      "frame_path": [
+        "workframe"
+      ],
+      "strategies": [
+        {
+          "kind": "anchored_text",
+          "anchor": "SAVINGS",
+          "relation": "same_row",
+          "offset": 2,
+          "nth": 0
+        },
+        {
+          "kind": "selector",
+          "engine": "xpath",
+          "expression": "//tr[td[normalize-space()='SAVINGS']]/td[3]"
+        }
+      ]
+    }
+  },
+  "checkpoints": {
+    "s3": {
+      "kind": "text_present",
+      "text": "New Sub-Account",
+      "frame_path": [
+        "workframe"
+      ]
+    }
+  },
+  "outcomes": {}
+}
