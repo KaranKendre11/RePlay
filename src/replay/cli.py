@@ -5,6 +5,7 @@ Subcommands are added as their milestones land:
     run           M6  replay a saved capability with typed parameters
     capabilities  M10 list and inspect the capability catalog
     serve         M9  operator console and catalog API
+    approve       M13 promote a capability from draft on its replay record
 """
 
 from __future__ import annotations
@@ -284,6 +285,7 @@ def run_capability(
         ).run(arguments)
 
     _report(result)
+    _report_reliability(artifact, evidence_dir)
     raise typer.Exit(code=0 if result.ok else 1)
 
 
@@ -355,6 +357,76 @@ def _report(result) -> None:
 
     typer.echo(f"duration:  {result.duration_ms} ms")
     typer.echo(f"evidence:  {result.evidence_dir}")
+
+
+def _report_reliability(artifact, evidence_dir: Path) -> None:
+    """Show where this capability stands after the run that just happened.
+
+    Read out of the evidence rather than written into the artifact, so a replay
+    still leaves every checked-in file exactly as it found it. Printed anyway,
+    because a counter nobody sees move is a counter nobody trusts.
+    """
+    from replay.artifact.schema import ApprovalState
+    from replay.reliability import promotion_blockers, tally
+
+    tallied = tally(evidence_dir, artifact.ref)
+    typer.echo(f"replays:   {tallied.summary()}")
+    if artifact.reliability.approval is ApprovalState.APPROVED:
+        return
+    blockers = promotion_blockers(tallied, artifact)
+    if blockers:
+        typer.secho(f"approval:  draft — {blockers[0]}", fg=typer.colors.YELLOW)
+    else:
+        typer.secho(
+            f"approval:  draft — eligible; run `replay approve {artifact.name}`",
+            fg=typer.colors.GREEN,
+        )
+
+
+@app.command()
+def approve(
+    name: Annotated[str, typer.Argument(help="Capability name.")],
+    capability_version: Annotated[
+        str | None, typer.Option("--capability-version", help="Pin a version.")
+    ] = None,
+    evidence_dir: Annotated[
+        Path, typer.Option("--evidence-dir", help="Where the replay evidence lives.")
+    ] = Path("evidence"),
+) -> None:
+    """Promote a capability from draft to approved, on the evidence of its replays.
+
+    Deliberately a separate command rather than something a run does to itself.
+    Approval is what lets a capability be invoked unattended, so it should be an
+    act someone performs and can be asked about — the threshold below is a floor
+    on that act, not a substitute for it.
+    """
+    from replay.artifact import ArtifactNotFound, ArtifactStore
+    from replay.artifact.schema import ApprovalState
+    from replay.reliability import promotion_blockers, tally
+
+    store = ArtifactStore()
+    try:
+        artifact = store.load(name, capability_version)
+    except ArtifactNotFound as missing:
+        typer.secho(str(missing), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from missing
+
+    tallied = tally(evidence_dir, artifact.ref)
+    typer.secho(f"{artifact.ref}", fg=typer.colors.CYAN, nl=False)
+    typer.echo(f"  {tallied.summary()}")
+
+    blockers = promotion_blockers(tallied, artifact)
+    if blockers:
+        typer.secho("refusing to approve:", fg=typer.colors.RED, err=True)
+        for blocker in blockers:
+            typer.secho(f"  - {blocker}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    path = store.approve(
+        artifact.name, artifact.version, tallied.snapshot(approval=ApprovalState.APPROVED)
+    )
+    typer.secho(f"approved:  {artifact.ref} → {path}", fg=typer.colors.GREEN)
+    typer.echo(f"cited:     {tallied.summary()}, last verified {tallied.last_verified_at}")
 
 
 @app.command()
