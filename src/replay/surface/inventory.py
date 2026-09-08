@@ -87,9 +87,15 @@ COLLECT_JS = r"""
   }
 
   // Readable values: table cells whose row begins with a stable label.
+  // td and th together, in document order — CELL_STEP indexes the same list, and
+  // the two layers disagreeing is how a ladder ends up one cell off.
   for (const row of document.querySelectorAll('tr')) {
     const cells = Array.from(row.children).filter(c => /^(td|th)$/i.test(c.tagName));
     if (cells.length < 2) continue;
+    // A row of nothing but <th> labels the columns below it; its cells are not
+    // values of each other. Offering "Account No" as the *value of* "Type" put
+    // controls in front of the model that do not exist.
+    if (cells.every(c => c.tagName.toLowerCase() === 'th')) continue;
     const anchor = clean(cells[0].textContent);
     if (!anchor) continue;
     for (let i = 1; i < cells.length; i++) {
@@ -106,6 +112,12 @@ COLLECT_JS = r"""
   return out;
 }
 """
+
+#: One step of an XPath that walks a row's cells the way COLLECT_JS counts them.
+#: The collector derives ``offset`` from ``td`` and ``th`` together, so anything
+#: indexing that offset has to walk both. Counting ``td`` alone reads the cell
+#: next door on any row a ``<th>`` labels, with one match and no ambiguity flag.
+CELL_STEP = "*[self::td or self::th]"
 
 #: HTML tag to accessibility role, for the cases that matter here.
 ROLE_BY_TAG = {
@@ -221,11 +233,12 @@ def build_ladder(raw: dict[str, Any], role: str) -> list[Locator]:
                 anchor=raw["label"], relation=Relation.SAME_ROW, offset=int(raw["offset"])
             )
         )
+        anchor = f'normalize-space()="{raw["label"]}"'
         ladder.append(
             SelectorLocator(
                 engine="xpath",
                 expression=(
-                    f'//tr[td[normalize-space()="{raw["label"]}"]]/td[{int(raw["offset"]) + 1}]'
+                    f"//tr[td[{anchor}] or th[{anchor}]]/{CELL_STEP}[{int(raw['offset']) + 1}]"
                 ),
             )
         )

@@ -80,6 +80,7 @@ from replay.surface.base import (
     TargetNotFound,
 )
 from replay.surface.inventory import (
+    CELL_STEP,
     COLLECT_JS,
     MAX_CANDIDATES,
     Candidate,
@@ -494,7 +495,7 @@ class WebSurface:
                 anchor = xpath_literal(spec.anchor)
                 expr = (
                     f"//tr[td[normalize-space()={anchor}] or th[normalize-space()={anchor}]]"
-                    f"/td[{spec.offset + 1}]"
+                    f"/{CELL_STEP}[{spec.offset + 1}]"
                 )
                 return frame.locator(f"xpath={expr}")
 

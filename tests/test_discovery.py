@@ -147,7 +147,7 @@ def test_scripted_run_completes_the_goal(surface, recorder, meridian_server):
                 arguments={"index": field, "text": "12345", "parameter_name": "member_id"},
             ),
             ToolCall(name="click", arguments={"index": button, "expect_navigation": True}),
-            ToolCall(name="read_value", arguments={"index": 15, "output_name": "savings_balance"}),
+            ToolCall(name="read_value", arguments={"index": 12, "output_name": "savings_balance"}),
             ToolCall(
                 name="finish",
                 arguments={"summary": "Read the balance.", "checkpoint_text": "Current Balance"},
@@ -311,7 +311,7 @@ def test_a_checkpoint_that_asserts_this_run_s_data_is_flagged(surface, recorder,
                 arguments={"index": field, "text": "12345", "parameter_name": "member_id"},
             ),
             ToolCall(name="click", arguments={"index": button, "expect_navigation": True}),
-            ToolCall(name="read_value", arguments={"index": 15, "output_name": "savings_balance"}),
+            ToolCall(name="read_value", arguments={"index": 12, "output_name": "savings_balance"}),
             ToolCall(name="finish", arguments={"summary": "Done.", "checkpoint_text": "4,211.03"}),
         ]
     )

@@ -156,6 +156,36 @@ def test_unsupported_strategy_falls_through_instead_of_raising(surface):
     assert resolution.strategy_index == 1
 
 
+def test_enumeration_and_the_ladder_it_writes_count_cells_the_same_way(surface):
+    """Regression: the collector counted td+th, the generated XPath counted td.
+
+    Two consequences, both here. A row of nothing but ``<th>`` is a column
+    header, and offering its cells as values of each other put candidates in
+    front of the model whose ladders resolve to nothing at replay. And on a row
+    a ``<th>`` labels, the off-by-one arithmetic read the cell next door
+    instead — one match, no ambiguity flag, wrong number.
+    """
+    surface.act(
+        Action.NAVIGATE,
+        value=(
+            "data:text/html,<table>"
+            "<tr><th>Type</th><th>Balance</th></tr>"
+            "<tr><td>SAVINGS</td><td>10.00</td></tr>"
+            "<tr><th>Fees</th><td>1.00</td><td>2.00</td></tr>"
+            "</table>"
+        ),
+    )
+    values = [c for c in surface.inventory() if c.group == "value"]
+
+    assert [c.text for c in values] == ["10.00", "1.00", "2.00"], (
+        "the header row labels the columns below it and is not a row of values"
+    )
+    for candidate in values:
+        outcome = surface.act(Action.READ, candidate.to_target(), timeout_ms=600)
+        assert outcome.ok, f"enumerated {candidate.describe!r} does not resolve"
+        assert outcome.read_value == candidate.text, "and resolves to the cell it reported"
+
+
 # ---------- act ----------
 
 
