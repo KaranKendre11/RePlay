@@ -190,6 +190,31 @@ def test_resolution_is_reported_on_every_targeted_action(surface):
     assert outcome.to_dict()["resolution"]["kind"] == "label_adjacent"
 
 
+def test_anchored_text_takes_the_match_it_was_told_to_take(surface):
+    """Regression: ``nth`` was declared, validated and then ignored.
+
+    ``_build`` used anchor/relation/offset only and ``resolve`` took
+    ``locator.first`` regardless, so every ``nth`` returned the same cell. On a
+    member with two accounts of the same kind that reports account #1's balance
+    as account #2's — and the run still succeeds.
+
+    "OPEN" is the status cell of both of this member's account rows, so the
+    anchor matches two rows on the real screen.
+    """
+    search_for(surface, "12345")
+
+    def kind_of(n: int) -> TargetSpec:
+        return spec(
+            f"Kind of open account {n}", AnchoredTextLocator(anchor="OPEN", offset=0, nth=n)
+        )
+
+    assert surface.act(Action.READ, kind_of(0)).read_value == "SAVINGS"
+    assert surface.act(Action.READ, kind_of(1)).read_value == "CHECKING"
+
+    beyond = surface.act(Action.READ, kind_of(9), timeout_ms=600)
+    assert not beyond.ok, "asking for match 9 of 2 is a miss, not a different element"
+
+
 # ---------- dialogs ----------
 
 

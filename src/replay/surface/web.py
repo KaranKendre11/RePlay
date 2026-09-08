@@ -487,6 +487,8 @@ class WebSurface:
                 return frame.locator(f"xpath={expr}")
 
             case AnchoredTextLocator():
+                # Every match is returned, not just the one asked for: resolve()
+                # needs the count to report ambiguity, and picks with _nth_of.
                 if spec.relation is not Relation.SAME_ROW:
                     return None
                 anchor = xpath_literal(spec.anchor)
@@ -505,6 +507,18 @@ class WebSurface:
                 return None
 
         return None
+
+    @staticmethod
+    def _nth_of(spec: Locator) -> int:
+        """Which of several matches this strategy asked for.
+
+        ``AnchoredTextLocator.nth`` was declared, validated and then ignored:
+        the ladder took ``locator.first`` regardless, so a member with two
+        SAVINGS accounts had the first account's balance reported as the
+        second's, with the run still succeeding. Strategies that cannot be
+        ambiguous by construction do not declare it and take 0.
+        """
+        return int(getattr(spec, "nth", 0))
 
     def resolve(self, target: TargetSpec, *, timeout_ms: int = 5_000) -> Resolution:
         """Try the ladder in order until something matches.
@@ -536,16 +550,19 @@ class WebSurface:
                 except PlaywrightError as exc:
                     attempts.append(f"{spec.kind}: {type(exc).__name__}")
                     continue
-                if matches:
+                nth = self._nth_of(spec)
+                if matches > nth:
                     return Resolution(
                         tier=spec.tier,
                         strategy_index=index,
                         kind=spec.kind,
                         matches=matches,
                         frame_path=list(target.frame_path),
-                        handle=locator.first,
+                        handle=locator.nth(nth),
                     )
-                attempts.append(f"{spec.kind}: 0 matches")
+                # Asking for match 2 of 1 is a miss, not a reason to silently
+                # take a different element.
+                attempts.append(f"{spec.kind}: {matches} matches, wanted index {nth}")
 
             if time.monotonic() >= deadline:
                 raise TargetNotFound(target, attempts)
@@ -851,9 +868,10 @@ class WebSurface:
                 locator = self._build(self.frame_for(path), condition.locator)
             except FrameNotFound:
                 continue
-            if locator is None or not locator.count():
+            nth = self._nth_of(condition.locator)
+            if locator is None or locator.count() <= nth:
                 continue
-            element = locator.first
+            element = locator.nth(nth)
             try:
                 match condition.state:
                     case ElementState.VISIBLE:
