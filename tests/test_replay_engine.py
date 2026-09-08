@@ -13,7 +13,7 @@ The three that carry the most weight:
 import json
 
 import pytest
-from test_surface_protocol import MinimalSurface
+from test_surface_protocol import MarkupSurface, MinimalSurface
 
 from replay.artifact import ArtifactStore
 from replay.artifact.conditions import TextPresent
@@ -372,6 +372,27 @@ def test_evidence_is_written_for_every_replay(executor):
     assert (recorder_dir / "run.jsonl").exists()
     assert json.loads((recorder_dir / "result.json").read_text())["status"] == "success"
     assert result.evidence_dir == str(recorder_dir)
+
+
+def test_a_step_id_cannot_write_outside_the_evidence_directory(artifact, tmp_path):
+    """`Step.id` was interpolated straight into an evidence path.
+
+    It is `min_length=1, max_length=32` with no pattern, unlike every other
+    identifier in the schema, so `../../../../pwned` wrote a DOM dump outside
+    the evidence root — and did not even raise, because the recorder's
+    containment check is purely lexical.
+    """
+    escaping = artifact.model_copy(deep=True)
+    escaping.steps[2] = escaping.steps[2].model_copy(update={"id": "../../../../pwned"})
+
+    with EvidenceRecorder("path-escape", root=tmp_path) as recorder:
+        result = ReplayExecutor(
+            MarkupSurface("nothing this capability expects"), escaping, recorder=recorder
+        ).run({"member_id": "12345"})
+
+    dom = (recorder.dir / result.failure.evidence["dom"]).resolve()
+    assert dom.is_relative_to(recorder.dir.resolve()), dom
+    assert dom.exists()
 
 
 def test_generated_run_ids_do_not_collide():

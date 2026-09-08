@@ -101,6 +101,19 @@ def _describe(condition: Any) -> str:
     return str(kind)
 
 
+def _evidence_name(step_id: str) -> str:
+    """A step id, made safe to put in a file path.
+
+    ``Step.id`` is length-bounded and otherwise unconstrained, unlike every
+    other identifier in the schema. An id of ``../../../../pwned`` wrote a DOM
+    dump outside the evidence root and did not even raise, because the
+    recorder's containment check is lexical. The id is the artifact's to choose
+    and the artifact is not trusted with a path, so it is spelled out here as
+    well as being worth constraining in the schema.
+    """
+    return re.sub(r"[^A-Za-z0-9_-]", "_", step_id)[:32] or "step"
+
+
 def rebase(url: str, base: str) -> str:
     """Point a recorded URL at a different deployment of the same application.
 
@@ -962,7 +975,8 @@ class ReplayExecutor:
 
         if isinstance(self.surface, DumpsMarkup):
             markup = self.surface.html_of()
-            refs["dom"] = self.recorder.snapshot_text(f"dom/{step_id}.html", markup)
+            name = f"dom/{self._captures:02d}-{_evidence_name(step_id)}.html"
+            refs["dom"] = self.recorder.snapshot_text(name, markup)
         return refs
 
     def _finish(self, result: ReplayResult, started: float) -> None:
