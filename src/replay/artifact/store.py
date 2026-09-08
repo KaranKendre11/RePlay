@@ -273,6 +273,12 @@ def invocation_schema(artifact: CapabilityArtifact) -> dict:
             prop["pattern"] = param.pattern
         if param.example is not None:
             prop["examples"] = [param.example]
+        if param.sensitive:
+            # Published because a calling agent otherwise has no signal that a
+            # value is regulated — that it must not be logged, cached, or shown
+            # to a user — and the catalogue is the only description of the
+            # capability it ever sees.
+            prop["sensitive"] = True
         properties[param.name] = prop
 
     return {

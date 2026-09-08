@@ -24,6 +24,7 @@ schema forces the distinction to be made at record time.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime
 from enum import StrEnum
@@ -143,6 +144,57 @@ class ParamSpec(Model):
                 f"regular expression: {exc}"
             ) from exc
         return self
+
+    def check(self, value: object) -> str:
+        """Hold one supplied value to the type this parameter declares.
+
+        ``invocation_schema`` publishes ``"type": "integer"`` and ``api.summarise``
+        hands it to every calling agent as the capability's contract — but
+        nothing applied it. ``bind_parameters`` checked ``required`` and
+        ``pattern`` and then did ``str(supplied[name])``, and
+        ``InvokeRequest.arguments`` is ``dict[str, Any]``, so
+        ``{"product_code": ["S0", "2"]}`` bound to the literal string
+        ``"['S0', '2']"`` and was typed into the bank application.
+
+        Strings are accepted for every type, because the command line can only
+        supply strings — but they still have to parse as what was declared.
+        ``money`` is deliberately not parsed: formats vary by locale, and the
+        declared ``pattern`` is the tool for the shape of the value. This is
+        about its *kind*.
+
+        Returns the text to type into the application, so a caller cannot end
+        up with a value the check did not see.
+        """
+        if isinstance(value, bool):
+            # Before the int check: a bool *is* an int in Python, and "True"
+            # typed into a form field is never what anyone meant.
+            if self.type is not ValueType.BOOLEAN:
+                raise ValueError(self._mistyped(value))
+            return "true" if value else "false"
+        if not isinstance(value, str | int | float):
+            raise ValueError(self._mistyped(value))
+
+        text = str(value)
+        if self.type is ValueType.BOOLEAN:
+            if text.lower() not in ("true", "false"):
+                raise ValueError(self._mistyped(value))
+            return text.lower()
+
+        parse = {ValueType.INTEGER: int, ValueType.NUMBER: float}.get(self.type)
+        if parse is not None:
+            try:
+                number = parse(text)
+            except ValueError as bad:
+                raise ValueError(self._mistyped(value)) from bad
+            if not math.isfinite(number):
+                raise ValueError(self._mistyped(value))
+        return text
+
+    def _mistyped(self, value: object) -> str:
+        return (
+            f"argument {self.name!r} is declared {self.type.value!r}, but "
+            f"{value!r} is a {type(value).__name__}"
+        )
 
     @model_validator(mode="after")
     def _sensitive_params_carry_no_example(self) -> ParamSpec:

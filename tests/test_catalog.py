@@ -50,6 +50,43 @@ def test_a_capability_publishes_the_arguments_it_takes(client):
     assert schema["additionalProperties"] is False
 
 
+def test_a_published_type_is_a_type_the_call_is_held_to(client):
+    """A contract published and never applied is not a contract.
+
+    ``arguments`` is ``dict[str, Any]`` and ``bind_parameters`` checked only
+    ``required`` and ``pattern`` before ``str()``-ing the value, so a list bound
+    to the literal string ``"['S0', '2']"`` and was typed into the bank
+    application.
+    """
+    response = client.post(
+        f"/capabilities/{CAPABILITY}:invoke",
+        json={"arguments": {"member_id": ["1", "2"]}},
+    )
+
+    assert response.status_code == 422
+    assert "declared 'string'" in response.json()["error"]
+
+
+def test_a_capability_publishes_which_arguments_are_regulated(tmp_path):
+    """Otherwise an agent reading the catalogue cannot tell, and will log it."""
+    from replay.artifact import invocation_schema
+    from replay.artifact.schema import ParamSpec
+
+    artifact = ArtifactStore("artifacts").load(CAPABILITY)
+    with_secret = artifact.model_copy(
+        update={
+            "inputs": [
+                *artifact.inputs,
+                ParamSpec(name="ssn", description="Member SSN.", sensitive=True),
+            ]
+        }
+    )
+    published = invocation_schema(with_secret)["properties"]
+
+    assert published["ssn"]["sensitive"] is True
+    assert "sensitive" not in published["member_id"]
+
+
 def test_a_capability_publishes_what_it_returns(client):
     returns = client.get(f"/capabilities/{CAPABILITY}").json()["returns"]
     assert [r["name"] for r in returns] == ["current_savings_balance"]

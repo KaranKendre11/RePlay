@@ -161,6 +161,22 @@ def create_api(
         except OverrideRejected as rejected:
             return JSONResponse({"error": str(rejected)}, status_code=409)
 
+        # The declared types, applied. They are published to every calling
+        # agent as this capability's contract and nothing enforced them:
+        # `bind_parameters` checks `required` and `pattern` and then does
+        # `str(value)`, and `arguments` is `dict[str, Any]`, so
+        # {"product_code": ["S0", "2"]} was typed into the bank application as
+        # the literal string "['S0', '2']". Names this capability does not
+        # declare are left alone — `bind_parameters` reports those, and better.
+        declared = {p.name: p for p in artifact.inputs}
+        try:
+            arguments = {
+                name: declared[name].check(value) if name in declared else value
+                for name, value in request.arguments.items()
+            }
+        except ValueError as mistyped:
+            return JSONResponse({"error": str(mistyped)}, status_code=422)
+
         run_id = new_run_id("invoke")
         gate = RiskGate(
             allow_risky=request.allow_risky,
@@ -185,7 +201,7 @@ def create_api(
                 base_url=request.target,
                 gate=gate,
                 escalation=handler,
-            ).run(request.arguments)
+            ).run(arguments)
 
         # 200 for success and for a declared business outcome — both are the
         # capability working. Only a malfunction is an error status.
