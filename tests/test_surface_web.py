@@ -118,6 +118,25 @@ def test_a_mask_that_cannot_be_applied_withholds_the_screenshot(surface):
     assert "NOTE:" in observation.render(), "the reason travels with the observation"
 
 
+def test_an_unnamed_frame_is_reachable_by_the_path_it_is_enumerated_under(surface):
+    """Regression: enumerated as "(unnamed)", then looked up by name.
+
+    ``frame_for`` matches ``f.name == name`` and no frame is ever called
+    "(unnamed)", so such a frame was listed and permanently unreachable — and
+    because every consumer swallows ``FrameNotFound``, it was reported as not
+    existing at all rather than as something that could not be reached.
+    """
+    surface.act(
+        Action.NAVIGATE,
+        value='data:text/html,<iframe srcdoc="<p>INNER CONTENT</p>"></iframe>',
+    )
+    inner = [f for f in surface.observe(screenshot=False).frames if "INNER CONTENT" in f.aria]
+
+    assert inner, "the unnamed frame is part of the observation"
+    assert inner[0].path == ["#0"], "named by position, because a position resolves"
+    assert "INNER CONTENT" in surface.text_of(inner[0].path)
+
+
 # ---------- the locator ladder ----------
 
 

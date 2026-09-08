@@ -281,22 +281,46 @@ class WebSurface:
 
     # -- frames -----------------------------------------------------------
 
-    def frame_for(self, path: list[str] | None) -> Frame:
-        """Walk a frame path from the top document.
+    @staticmethod
+    def _children(frame: Frame) -> list[Frame]:
+        """Attached child frames, in document order.
 
-        Detached frames are skipped. When the top document re-navigates,
-        Playwright keeps the previous child frames in ``child_frames`` for a
-        moment while the replacements attach; picking one of those yields
-        "Frame was detached" on the next query. Preferring an attached frame
-        with the same name — and letting :meth:`resolve` poll — turns that race
-        into a short wait instead of a spurious failure.
+        Detached ones are skipped. When the top document re-navigates,
+        Playwright keeps the previous children in ``child_frames`` for a moment
+        while the replacements attach; picking one of those yields "Frame was
+        detached" on the next query. Dropping them here — and letting
+        :meth:`resolve` poll — turns that race into a short wait instead of a
+        spurious failure.
+
+        The single ordering :meth:`_frame_paths` and :meth:`frame_for` both
+        count against, which is what makes a positional path token mean the
+        same thing to the one that writes it and the one that reads it.
         """
+        return [f for f in frame.child_frames if not f.is_detached()]
+
+    @staticmethod
+    def _token(index: int, frame: Frame) -> str:
+        """How one frame is named inside a frame path.
+
+        An unnamed frame used to be enumerated as ``"(unnamed)"`` and then
+        looked up by ``name``, which never matched — so it was listed and then
+        permanently unreachable, and since every consumer swallows
+        :class:`FrameNotFound` it was reported as not existing at all. A
+        position resolves; a placeholder does not.
+        """
+        return frame.name or f"#{index}"
+
+    def frame_for(self, path: list[str] | None) -> Frame:
+        """Walk a frame path from the top document."""
         frame = self.page.main_frame
         for name in path or []:
-            named = [f for f in frame.child_frames if f.name == name]
-            child = next((f for f in named if not f.is_detached()), None)
+            children = self._children(frame)
+            child = next(
+                (f for i, f in enumerate(children) if name in (f.name, self._token(i, f))),
+                None,
+            )
             if child is None:
-                available = [f.name for f in frame.child_frames if not f.is_detached()]
+                available = [self._token(i, f) for i, f in enumerate(children)]
                 raise FrameNotFound(f"no attached frame named {name!r}; available: {available}")
             frame = child
         return frame
@@ -331,9 +355,8 @@ class WebSurface:
 
         def walk(frame: Frame, prefix: list[str]) -> None:
             paths.append(prefix)
-            for child in frame.child_frames:
-                if not child.is_detached():
-                    walk(child, [*prefix, child.name or "(unnamed)"])
+            for index, child in enumerate(self._children(frame)):
+                walk(child, [*prefix, self._token(index, child)])
 
         walk(self.page.main_frame, [])
         return paths
