@@ -50,6 +50,43 @@ def test_a_capability_publishes_the_arguments_it_takes(client):
     assert schema["additionalProperties"] is False
 
 
+def test_a_published_type_is_a_type_the_call_is_held_to(client):
+    """A contract published and never applied is not a contract.
+
+    ``arguments`` is ``dict[str, Any]`` and ``bind_parameters`` checked only
+    ``required`` and ``pattern`` before ``str()``-ing the value, so a list bound
+    to the literal string ``"['S0', '2']"`` and was typed into the bank
+    application.
+    """
+    response = client.post(
+        f"/capabilities/{CAPABILITY}:invoke",
+        json={"arguments": {"member_id": ["1", "2"]}},
+    )
+
+    assert response.status_code == 422
+    assert "declared 'string'" in response.json()["error"]
+
+
+def test_a_capability_publishes_which_arguments_are_regulated(tmp_path):
+    """Otherwise an agent reading the catalogue cannot tell, and will log it."""
+    from replay.artifact import invocation_schema
+    from replay.artifact.schema import ParamSpec
+
+    artifact = ArtifactStore("artifacts").load(CAPABILITY)
+    with_secret = artifact.model_copy(
+        update={
+            "inputs": [
+                *artifact.inputs,
+                ParamSpec(name="ssn", description="Member SSN.", sensitive=True),
+            ]
+        }
+    )
+    published = invocation_schema(with_secret)["properties"]
+
+    assert published["ssn"]["sensitive"] is True
+    assert "sensitive" not in published["member_id"]
+
+
 def test_a_capability_publishes_what_it_returns(client):
     returns = client.get(f"/capabilities/{CAPABILITY}").json()["returns"]
     assert [r["name"] for r in returns] == ["current_savings_balance"]
@@ -84,6 +121,56 @@ def test_the_whole_artifact_is_available_for_review(client):
     artifact = client.get(f"/capabilities/{CAPABILITY}/artifact").json()
     assert artifact["steps"]
     assert artifact["steps"][1]["target"]["rationale"], "the robustness reasoning is there"
+
+
+def test_a_file_that_does_not_parse_is_an_answer_not_a_traceback(tmp_path):
+    """``get_artifact`` and ``invoke`` caught only ``ArtifactNotFound``.
+
+    That is raised solely from a ``path.exists()`` check, so a path that exists
+    and does not parse came out of the handler as a raw ``ValidationError`` —
+    an HTTP 500 with a traceback, and a 404-versus-500 oracle telling an
+    unauthenticated caller which paths exist on the host.
+    """
+    (tmp_path / "lookup_balance@1.0.0.json").write_text('{"schema_version": "1.0", "na')
+    broken = TestClient(
+        create_api(
+            artifacts_dir=tmp_path,
+            evidence_dir=tmp_path / "runs",
+            allowlist=TEST_ALLOWLIST,
+        )
+    )
+
+    unreadable = broken.get(f"/capabilities/{CAPABILITY}/artifact?version=1.0.0")
+    assert unreadable.status_code == 500
+    assert "not a readable capability artifact" in unreadable.json()["error"]
+
+    # And the endpoint answers identically whether or not the traversal target
+    # happens to exist, so it says nothing about the filesystem.
+    assert (
+        broken.get(f"/capabilities/{CAPABILITY}/artifact?version=../../policy").status_code == 404
+    )
+    assert broken.get(f"/capabilities/{CAPABILITY}/artifact?version=../../nope").status_code == 404
+
+
+def test_an_unparseable_override_is_a_refusal_not_a_500(tmp_path):
+    """The other unhandled parse on the invoke path."""
+    (tmp_path / "overrides" / "northgate").mkdir(parents=True)
+    (tmp_path / "overrides" / "northgate" / f"{CAPABILITY}.json").write_text("{ not json")
+    client = TestClient(
+        create_api(
+            evidence_dir=tmp_path / "runs",
+            overrides_dir=tmp_path / "overrides",
+            allowlist=TEST_ALLOWLIST,
+        )
+    )
+
+    response = client.post(
+        f"/capabilities/{CAPABILITY}:invoke",
+        json={"arguments": {"member_id": "12345"}, "tenant": "northgate"},
+    )
+
+    assert response.status_code == 409
+    assert "not a readable override" in response.json()["error"]
 
 
 def test_an_unknown_capability_is_a_404(client):

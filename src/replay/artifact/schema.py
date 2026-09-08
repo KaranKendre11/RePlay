@@ -24,6 +24,7 @@ schema forces the distinction to be made at record time.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime
 from enum import StrEnum
@@ -40,8 +41,16 @@ IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 OUTCOME_CODE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
+#: Institution slugs are chosen by whoever onboards a tenant, and the name is
+#: interpolated into a filesystem path and into a capability's identity. Hyphens
+#: are allowed because real slugs use them; ``.`` and ``/`` are not, because
+#: ``overrides/../../x`` traverses and ``overrides//tmp/x`` is absolute.
+TENANT = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
 Identifier = Annotated[str, Field(pattern=IDENTIFIER.pattern, max_length=64)]
 SemVer = Annotated[str, Field(pattern=SEMVER.pattern)]
+Tenant = Annotated[str, Field(pattern=TENANT.pattern, max_length=64)]
+StepId = Annotated[str, Field(pattern=IDENTIFIER.pattern, max_length=32)]
 
 
 class Model(BaseModel):
@@ -136,6 +145,57 @@ class ParamSpec(Model):
                 f"regular expression: {exc}"
             ) from exc
         return self
+
+    def check(self, value: object) -> str:
+        """Hold one supplied value to the type this parameter declares.
+
+        ``invocation_schema`` publishes ``"type": "integer"`` and ``api.summarise``
+        hands it to every calling agent as the capability's contract — but
+        nothing applied it. ``bind_parameters`` checked ``required`` and
+        ``pattern`` and then did ``str(supplied[name])``, and
+        ``InvokeRequest.arguments`` is ``dict[str, Any]``, so
+        ``{"product_code": ["S0", "2"]}`` bound to the literal string
+        ``"['S0', '2']"`` and was typed into the bank application.
+
+        Strings are accepted for every type, because the command line can only
+        supply strings — but they still have to parse as what was declared.
+        ``money`` is deliberately not parsed: formats vary by locale, and the
+        declared ``pattern`` is the tool for the shape of the value. This is
+        about its *kind*.
+
+        Returns the text to type into the application, so a caller cannot end
+        up with a value the check did not see.
+        """
+        if isinstance(value, bool):
+            # Before the int check: a bool *is* an int in Python, and "True"
+            # typed into a form field is never what anyone meant.
+            if self.type is not ValueType.BOOLEAN:
+                raise ValueError(self._mistyped(value))
+            return "true" if value else "false"
+        if not isinstance(value, str | int | float):
+            raise ValueError(self._mistyped(value))
+
+        text = str(value)
+        if self.type is ValueType.BOOLEAN:
+            if text.lower() not in ("true", "false"):
+                raise ValueError(self._mistyped(value))
+            return text.lower()
+
+        parse = {ValueType.INTEGER: int, ValueType.NUMBER: float}.get(self.type)
+        if parse is not None:
+            try:
+                number = parse(text)
+            except ValueError as bad:
+                raise ValueError(self._mistyped(value)) from bad
+            if not math.isfinite(number):
+                raise ValueError(self._mistyped(value))
+        return text
+
+    def _mistyped(self, value: object) -> str:
+        return (
+            f"argument {self.name!r} is declared {self.type.value!r}, but "
+            f"{value!r} is a {type(value).__name__}"
+        )
 
     @model_validator(mode="after")
     def _sensitive_params_carry_no_example(self) -> ParamSpec:
@@ -306,7 +366,11 @@ class RecoveryRule(Model):
 class Step(Model):
     """One recorded action."""
 
-    id: str = Field(min_length=1, max_length=32)
+    #: Constrained like every other identifier in this schema, and for a reason
+    #: the others do not have: the executor interpolates a step id into an
+    #: evidence file path. It was the one identifier here with a length limit
+    #: and no pattern.
+    id: StepId
     intent: str = Field(
         min_length=1,
         description="What this step is for, in plain language, for a human reviewer.",
@@ -371,7 +435,6 @@ class ApprovalState(StrEnum):
 class PolicyBlock(Model):
     max_risk: RiskClass = RiskClass.SAFE
     requires_approval: bool = True
-    allowlist_ref: str | None = None
 
 
 class Provenance(Model):
@@ -435,6 +498,15 @@ class CapabilityArtifact(Model):
     schema_version: Literal["1.0"] = SCHEMA_VERSION
     name: Identifier
     version: SemVer
+    tenant: Tenant | None = Field(
+        default=None,
+        description=(
+            "The deployment this copy was specialised for, set by "
+            ":func:`replay.artifact.overrides.apply_override`. Never present on a "
+            "published artifact: the file on disk is the base recording, and the "
+            "store refuses to save a specialisation over it."
+        ),
+    )
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     app: AppRef
@@ -450,7 +522,16 @@ class CapabilityArtifact(Model):
 
     @property
     def ref(self) -> str:
-        return f"{self.name}@{self.version}"
+        """This capability's identity, as everything downstream keys on it.
+
+        The tenant is part of it. An override changes the host, the mount point,
+        the selectors and the checkpoints, so a Northgate replay observes a
+        different deployment from a base replay — and keying reliability on
+        ``name@version`` alone meant five clean ``--tenant northgate`` runs
+        satisfied every promotion rule for the *base* capability, which had
+        never been run against that deployment at all. The reverse held too.
+        """
+        return f"{self.name}@{self.version}" + (f"#{self.tenant}" if self.tenant else "")
 
     @property
     def version_tuple(self) -> tuple[int, int, int]:
@@ -530,3 +611,27 @@ class CapabilityArtifact(Model):
                 "reclassify the step"
             )
         return self
+
+
+#: The surface families a browser runner can drive. ``DESKTOP`` names an
+#: accessibility tree no browser reaches.
+BROWSER_SURFACES = frozenset({SurfaceKind.WEB, SurfaceKind.LEGACY_WEB})
+
+
+def unrunnable_on_a_browser(artifact: CapabilityArtifact) -> str | None:
+    """Why a browser runner must not attempt this capability, or ``None``.
+
+    :class:`SurfaceKind` promises precisely this — recorded in the artifact "so
+    the replay engine can refuse to run a capability on a surface it was not
+    recorded for, rather than failing obscurely at the first locator" — and
+    nothing read it, so it did exactly the thing its own docstring says is
+    prevented. Both entry points that pick a surface pick a browser, so both
+    ask here before opening one.
+    """
+    if artifact.app.surface in BROWSER_SURFACES:
+        return None
+    return (
+        f"{artifact.ref} was recorded against a {artifact.app.surface.value!r} surface; "
+        "this runner drives a browser, and a locator ladder recorded against a desktop "
+        "accessibility tree does not mean the same thing here"
+    )

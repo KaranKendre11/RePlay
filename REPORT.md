@@ -118,7 +118,11 @@ and a test strips the declaration to prove the answer changes.
 change the entry point, a target, a checkpoint or an outcome detector — never the steps, inputs or
 outputs, which are the contract (`artifact/overrides.py`). `apply_override` re-derives that
 contract afterwards and refuses anything that moved: a tenant needing a different flow needs a
-different capability.
+different capability. A checkpoint may be *reworded*, not weakened — the replacement has to assert
+the same kind of thing, or a tenant file could swap the proof a sub-account opened for a condition
+that is always true. A named tenant the overrides root has never heard of is refused rather than
+quietly run as the base, and the specialised artifact carries the tenant in its ref, so a
+Northgate replay is evidence about Northgate and about nothing else.
 
 Demonstrated, not asserted: the Northgate variant renames the member field, the search button, the
 balance column and the form field, and mounts the product under `/tlr` — each breaking a different
@@ -164,8 +168,10 @@ precisely when a general rule was too generous.
 safety valve and the human-in-the-loop path one mechanism. Refusal happens before a browser opens.
 
 **Approval is earned, not typed.** Counters are derived from run evidence, never stored — a stored
-counter merely *claims* five clean replays happened. `replay approve` needs five recent runs, no
-failures, no drift, three full successes and more than one argument set. A business outcome
+counter merely *claims* five clean replays happened. The threshold lives in `store.approve`, which
+takes the evidence rather than a reliability block, so every caller routes through it instead of
+only the one an operator happens to type. `replay approve` needs five recent runs, no failures, no
+drift, three full successes and more than one argument set. A business outcome
 exercises only a prefix of the flow, so it counts apart: `lookup_balance` is unapprovable until it
 has met a member who does not exist. Approval gates *unattended* use, so a reachable operator
 satisfies it — otherwise a capability needing approval could never earn one, having never been
