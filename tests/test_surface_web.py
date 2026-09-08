@@ -229,6 +229,44 @@ def test_accepting_a_dialog_completes_the_write_flow(surface):
     assert "SUB-ACCOUNT OPENED" in surface.text_of(WORK)
 
 
+def test_a_failed_action_does_not_leave_accept_armed_for_the_next_one(surface):
+    """Regression: dialog policy belongs to the action that asked for it.
+
+    ``_pending_dialog`` was set before anything could fail and cleared on no
+    failure path, so an irreversible step that armed ACCEPT and then could not
+    resolve its target left ACCEPT armed. The next click — which passed no
+    policy at all — accepted a confirm() and opened an account the flow never
+    asked to open.
+    """
+    search_for(surface, "12345")
+    surface.act(
+        Action.CLICK,
+        spec("Open link", RoleNameLocator(role="link", name="Open Sub-Account")),
+        expect_navigation=True,
+    )
+    surface.act(Action.SELECT, spec("Product", RoleNameLocator(role="combobox", name="")), "S02")
+
+    armed = surface.act(
+        Action.CLICK,
+        spec("Missing", RoleNameLocator(role="button", name="Nope")),
+        on_dialog=DialogPolicy.ACCEPT,
+        timeout_ms=600,
+    )
+    assert not armed.ok, "the step that armed ACCEPT never ran"
+
+    # expect_navigation, so the assertion is not racing the form submit: an
+    # accepted confirm() navigates, a dismissed one demonstrably does not.
+    outcome = surface.act(
+        Action.CLICK,
+        spec("Submit", RoleNameLocator(role="button", name="Submit")),
+        expect_navigation=True,
+        timeout_ms=2_000,
+    )
+    assert any("confirm" in d for d in outcome.dialogs)
+    assert not outcome.navigated, "the previous action's ACCEPT must not answer this dialog"
+    assert "SUB-ACCOUNT OPENED" not in surface.text_of(WORK)
+
+
 # ---------- conditions ----------
 
 

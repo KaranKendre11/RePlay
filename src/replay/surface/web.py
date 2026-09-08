@@ -547,10 +547,45 @@ class WebSurface:
         on_dialog: DialogPolicy | None = None,
         timeout_ms: int = 10_000,
     ) -> ActionOutcome:
-        self._require_control()
-        if on_dialog is not None:
-            self._pending_dialog = on_dialog
+        """Perform one action, answering at most this action's own dialogs.
 
+        ``on_dialog`` is armed for the duration of this call and disarmed on the
+        way out, however it ends. An action that armed ACCEPT and then failed
+        used to leave it armed, so the *next* dialog — a confirm() nobody
+        instructed us to accept, possibly one an operator raised during a
+        handoff on this same live session — was answered OK. Which is the one
+        thing this module says it never does.
+        """
+        self._require_control()
+        if on_dialog is None:
+            return self._act(
+                action,
+                target,
+                value,
+                expect_navigation=expect_navigation,
+                timeout_ms=timeout_ms,
+            )
+        self._pending_dialog = on_dialog
+        try:
+            return self._act(
+                action,
+                target,
+                value,
+                expect_navigation=expect_navigation,
+                timeout_ms=timeout_ms,
+            )
+        finally:
+            self._pending_dialog = None
+
+    def _act(
+        self,
+        action: Action,
+        target: TargetSpec | None = None,
+        value: str | None = None,
+        *,
+        expect_navigation: bool = False,
+        timeout_ms: int = 10_000,
+    ) -> ActionOutcome:
         # Enforced here rather than at the call site, so discovery, replay and
         # recovery rules are all covered without knowing the allowlist exists.
         if self.allowlist is not None:
