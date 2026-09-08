@@ -557,17 +557,10 @@ class WebSurface:
         thing this module says it never does.
         """
         self._require_control()
-        if on_dialog is None:
-            return self._act(
-                action,
-                target,
-                value,
-                expect_navigation=expect_navigation,
-                timeout_ms=timeout_ms,
-            )
-        self._pending_dialog = on_dialog
+        if on_dialog is not None:
+            self._pending_dialog = on_dialog
         try:
-            return self._act(
+            outcome = self._act(
                 action,
                 target,
                 value,
@@ -575,7 +568,51 @@ class WebSurface:
                 timeout_ms=timeout_ms,
             )
         finally:
-            self._pending_dialog = None
+            # Only what this call armed. ACCEPT_DIALOG and answer_next_dialog()
+            # deliberately arm the *next* action and must survive this one.
+            if on_dialog is not None:
+                self._pending_dialog = None
+        return self._check_landing(outcome)
+
+    def _check_landing(self, outcome: ActionOutcome) -> ActionOutcome:
+        """Check where the action landed, not merely where it asked to go.
+
+        ``check_navigation`` used to run for ``Action.NAVIGATE`` and nothing
+        else, so a click that followed a link or submitted a form reached any
+        route unchecked — which left the ``denied_routes`` in ``policy.toml``
+        constraining only URLs somebody had typed. Worst in discovery, where the
+        model is handed an enumerated list of links and picks one by index. A
+        landing URL is knowable only afterwards, so it is checked afterwards,
+        and for every action rather than for navigation alone.
+
+        The fetch cannot be un-made. What can be stopped is the run continuing
+        on that page, so the outcome becomes a refusal *and* the session is
+        parked on a blank page: ``observe``, ``text_of``, ``inventory`` and
+        ``html_of`` carry no check of their own, and an off-limits screen must
+        not reach a screenshot, an evidence file or a model prompt merely
+        because nobody happened to act again.
+        """
+        if self.allowlist is None:
+            return outcome
+        for url in {self.page.url, *(frame.url for frame in self.page.frames)}:
+            if not url.startswith("http"):
+                continue  # about:blank and friends are not somewhere we went.
+            try:
+                self.allowlist.check_navigation(url)
+            except PolicyRefused as refusal:
+                with contextlib.suppress(PlaywrightError):
+                    self.page.goto("about:blank")
+                return self._done(
+                    outcome.action,
+                    False,
+                    resolution=outcome.resolution,
+                    error=str(refusal),
+                    note=(
+                        "the page had already loaded when this was caught; the session has "
+                        "been left blank so nothing off-limits is observed or recorded"
+                    ),
+                )
+        return outcome
 
     def _act(
         self,
@@ -588,6 +625,8 @@ class WebSurface:
     ) -> ActionOutcome:
         # Enforced here rather than at the call site, so discovery, replay and
         # recovery rules are all covered without knowing the allowlist exists.
+        # This is the half that can be checked before acting; where the action
+        # actually lands is checked afterwards, in _check_landing.
         if self.allowlist is not None:
             try:
                 self.allowlist.check_action(action)

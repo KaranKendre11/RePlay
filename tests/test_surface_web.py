@@ -29,6 +29,7 @@ from replay.artifact.locators import (
     Tier,
 )
 from replay.artifact.schema import Action, TargetSpec
+from replay.policy.allowlist import Allowlist
 from replay.surface import (
     Controller,
     ControlNotHeld,
@@ -265,6 +266,27 @@ def test_a_failed_action_does_not_leave_accept_armed_for_the_next_one(surface):
     assert any("confirm" in d for d in outcome.dialogs)
     assert not outcome.navigated, "the previous action's ACCEPT must not answer this dialog"
     assert "SUB-ACCOUNT OPENED" not in surface.text_of(WORK)
+
+
+def test_a_click_driven_navigation_is_checked_against_the_allowlist(meridian_server):
+    """Regression: the allowlist only ever saw URLs somebody typed.
+
+    ``check_navigation`` ran for ``Action.NAVIGATE`` and nothing else, so a
+    click that follows a link or submits a form reached any route unchecked and
+    nothing re-checked the URL afterwards. The routes here permit the frameset,
+    the nav frame and the search screen, and not the screen Search submits to.
+    """
+    narrow = Allowlist(domains=("127.0.0.1:*",), routes=("/", "/nav", "/search"))
+    with WebSurface(allowlist=narrow) as s:
+        assert s.act(Action.NAVIGATE, value=meridian_server).ok, "the start page is permitted"
+        s.act(Action.TYPE, MEMBER_FIELD, "12345")
+        outcome = s.act(Action.CLICK, SEARCH_BUTTON, expect_navigation=True)
+
+        assert not outcome.ok
+        assert "refused" in outcome.error
+        assert "/member" in outcome.error, "the route reached by the click, not the one typed"
+        assert "blank" in outcome.note, "the run must not carry on observing that page"
+        assert "MEMBER" not in s.text_of(), "and nothing off-limits is left readable"
 
 
 # ---------- conditions ----------
