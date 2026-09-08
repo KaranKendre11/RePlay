@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from replay.artifact import ArtifactStore
-from replay.artifact.schema import ApprovalState
+from replay.artifact.schema import Action, ApprovalState
 from replay.engine import Failure, FailureClass, ReplayExecutor, ReplayStatus
 from replay.escalation import (
     ConsoleEscalation,
@@ -367,6 +367,28 @@ def test_what_the_operator_did_is_recorded(meridian_server, write_capability, tm
     assert performed, "the operator's clicks were captured, not self-reported"
     assert any(a["kind"] == "click" for a in performed)
     assert any("Submit" in a["label"] for a in performed)
+
+
+def test_a_grid_cell_is_recorded_by_its_column_not_its_neighbour(meridian_server):
+    """A data grid has no labels, and the cell beside it is not one.
+
+    Falling through to "previous cell's text + field" put a full account number
+    and a balance into HumanAction.label — the escalation_resolved event and the
+    operator console, which renders straight from the queue.
+    """
+    with WebSurface(allowlist=PERMISSIVE) as surface:
+        surface.act(Action.NAVIGATE, value=f"{meridian_server}/member/12345")
+        surface.release_control()
+        frame = surface.frame_for([])
+        for text in ("SAVINGS", "0004421187", "4,211.03"):
+            frame.get_by_text(text, exact=True).first.click()
+        performed = surface.reacquire_control()
+
+    labels = [a["label"] for a in performed]
+    assert labels, "the clicks were captured"
+    assert not any("0004421187" in label or "4,211.03" in label for label in labels), labels
+    # The column headers, whatever the tenant's skin calls them.
+    assert all(label.endswith(" cell") and len(label) > len(" cell") for label in labels), labels
 
 
 def test_an_operator_who_abandons_the_run_ends_it(meridian_server, write_capability, tmp_path):
