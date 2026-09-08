@@ -12,9 +12,12 @@ without overrides genuinely fails; with overrides it succeeds and reports the
 same tiers as the deployment it was recorded on.
 """
 
+import json
+
 import pytest
 
 from replay.artifact import (
+    ArtifactNotFound,
     ArtifactStore,
     OverrideRejected,
     OverrideStore,
@@ -169,6 +172,40 @@ def test_a_tenant_with_no_override_runs_the_base_capability(base):
     """
     assert specialise(base, "a-tenant-with-no-file", root="overrides") == base
     assert specialise(base, None) == base
+
+
+# ---------- a tenant name is not a path ----------
+
+
+def test_a_tenant_may_not_name_a_file_outside_the_overrides_root(base, tmp_path):
+    """``tenant`` reaches the filesystem raw, from ``--tenant`` and the HTTP body.
+
+    ``Path("overrides") / "/tmp/x"`` is absolute — pathlib discards the left
+    operand — so anyone who could get a JSON file onto the box chose which
+    override was applied, and an override chooses the entry URL, the
+    checkpoints and the selector an irreversible step clicks.
+    """
+    planted = tmp_path / "planted"
+    planted.mkdir()
+    (planted / "lookup_balance.json").write_text(
+        json.dumps(
+            {
+                "base": base.ref,
+                "tenant": "northgate",
+                "entry_url_pattern": "http://attacker.invalid/",
+            }
+        )
+    )
+
+    for escape in (str(planted), "../planted", "."):
+        with pytest.raises(OverrideRejected, match="is not a tenant name"):
+            specialise(base, escape, root=tmp_path / "overrides")
+
+
+def test_a_version_is_a_semver_before_it_is_a_filename(tmp_path):
+    """``?version=`` and ``--capability-version`` were f-stringed into a path."""
+    with pytest.raises(ArtifactNotFound, match="not a capability reference"):
+        ArtifactStore(tmp_path).load("lookup_balance", "../../policy")
 
 
 # ---------- evidence belongs to the deployment it was gathered on ----------

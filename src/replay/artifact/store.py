@@ -19,7 +19,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from replay.artifact.schema import CapabilityArtifact, Reliability
+from replay.artifact.schema import IDENTIFIER, SEMVER, CapabilityArtifact, Reliability
 
 DEFAULT_ROOT = Path("artifacts")
 
@@ -48,6 +48,18 @@ class ArtifactStore:
     # -- paths ------------------------------------------------------------
 
     def path_for(self, name: str, version: str) -> Path:
+        """The one place a caller-supplied reference becomes a filesystem path.
+
+        ``version`` arrives raw from ``?version=`` and
+        ``--capability-version`` and was f-stringed straight in, so it was the
+        one component of the path nothing had checked. Both halves are held to
+        the patterns the schema already declares for them — a reference that
+        cannot name a capability is refused before it can name a file, which
+        also makes the endpoint answer 404 uniformly instead of leaking, in the
+        difference between 404 and 500, whether a path exists on the host.
+        """
+        if not IDENTIFIER.match(name) or not SEMVER.match(version):
+            raise ArtifactNotFound(f"{name}@{version} is not a capability reference")
         return self.root / f"{name}@{version}.json"
 
     # -- read -------------------------------------------------------------

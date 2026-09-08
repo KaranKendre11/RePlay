@@ -36,7 +36,14 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from replay.artifact.conditions import Condition
-from replay.artifact.schema import CapabilityArtifact, Reliability, TargetSpec
+from replay.artifact.schema import (
+    IDENTIFIER,
+    TENANT,
+    CapabilityArtifact,
+    Reliability,
+    TargetSpec,
+    Tenant,
+)
 
 DEFAULT_ROOT = Path("overrides")
 
@@ -51,7 +58,7 @@ class VariantOverride(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base: str = Field(description="The capability this specialises, as name@version.")
-    tenant: str
+    tenant: Tenant
     note: str = Field(default="", description="What differs about this deployment, for a reviewer.")
 
     entry_url_pattern: str | None = None
@@ -164,6 +171,24 @@ class OverrideStore:
         self.root = Path(root)
 
     def path_for(self, tenant: str, name: str) -> Path:
+        """The one place a caller-supplied string becomes a filesystem path.
+
+        ``tenant`` arrives raw from ``InvokeRequest.tenant`` and ``--tenant``,
+        and pathlib is unhelpful here in two different ways:
+        ``Path("overrides") / "../../x"`` traverses, and
+        ``Path("overrides") / "/tmp/x"`` is *absolute* — the left operand is
+        discarded. Either lets anyone who can reach the API and get a JSON file
+        onto the box choose which override is applied, and an override chooses
+        the selector an irreversible step clicks, the entry URL, and the
+        checkpoints. ``name`` was already constrained by the schema; ``tenant``
+        was not constrained at all.
+        """
+        if not TENANT.match(tenant):
+            raise OverrideRejected(
+                f"{tenant!r} is not a tenant name; expected {TENANT.pattern}"
+            )
+        if not IDENTIFIER.match(name):
+            raise OverrideRejected(f"{name!r} is not a capability name")
         return self.root / tenant / f"{name}.json"
 
     def load(self, tenant: str, name: str) -> VariantOverride | None:
