@@ -213,6 +213,60 @@ def test_console_escalation_gives_up_rather_than_holding_a_browser_forever():
     assert handler.escalate(request()).resolution is Resolution.ABORTED
 
 
+def test_a_resolution_is_terminal():
+    """The first decision is the decision. Nothing overwrites it afterwards."""
+    queue = InterventionQueue()
+    pending = request()
+    queue.submit(pending)
+
+    queue.resolve(pending.id, Resolution.RESUMED, note="operator fixed the login")
+    again = queue.resolve(pending.id, Resolution.ABORTED, note="no operator responded")
+
+    assert again.resolution is Resolution.RESUMED
+    assert again.operator_note == "operator fixed the login"
+
+
+def test_the_timeout_loses_the_race_against_a_late_operator():
+    """``event.wait()`` returns False if the click lands microseconds late.
+
+    The operator had fixed the session and handed it back; the run was
+    abandoned anyway and ``escalation_resolved`` recorded that nobody
+    responded, which is the evidence contradicting what the operator did.
+    """
+
+    class RacyQueue(InterventionQueue):
+        """The click lands in the window between the timeout and the abort."""
+
+        def resolve(self, request_id, resolution, **kwargs):
+            if resolution is Resolution.ABORTED and not getattr(self, "raced", False):
+                self.raced = True
+                super().resolve(request_id, Resolution.RESUMED, note="operator fixed the login")
+            return super().resolve(request_id, resolution, **kwargs)
+
+    resolved = ConsoleEscalation(RacyQueue(), timeout_s=0.01).escalate(request())
+
+    assert resolved.resolution is Resolution.RESUMED
+    assert resolved.operator_note == "operator fixed the login"
+
+
+def test_the_console_records_the_note_the_operator_typed():
+    """A declared field the shipped console could never populate.
+
+    The button sent no note and the endpoint binds it as a query parameter, so
+    even a JSON body was ignored.
+    """
+    queue = InterventionQueue()
+    pending = request()
+    queue.submit(pending)
+    client = TestClient(create_console(queue))
+
+    client.post(f"/interventions/{pending.id}/resume", params={"note": "reset the session"})
+
+    assert queue.get(pending.id).operator_note == "reset the session"
+    assert "reset the session" in client.get("/").text
+    assert "note=${encodeURIComponent(note)}" in client.get("/").text
+
+
 # ---------- the real handoff ----------
 
 

@@ -170,6 +170,15 @@ class InterventionQueue:
             request = self._requests.get(request_id)
             if request is None:
                 return None
+            # A resolution is terminal. Without this the timeout in
+            # ConsoleEscalation re-resolved as ABORTED whenever wait() returned
+            # False, which it does if the operator's click lands microseconds
+            # late — so the person fixed the session, handed it back, and the
+            # evidence recorded that nobody responded. First decision wins, and
+            # deciding it under the lock is what makes the timeout lose the race
+            # rather than merely usually lose it.
+            if request.status is RequestStatus.RESOLVED:
+                return request
             request.status = RequestStatus.RESOLVED
             request.resolution = resolution
             request.operator_note = note
