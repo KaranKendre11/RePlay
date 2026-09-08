@@ -143,6 +143,36 @@ SCREEN_EXPECTATION = {
 }
 
 
+#: How far into a surface's error string we are willing to read, and from
+#: where. ``Surface.act`` reports a failure as a string, so the diagnosis has to
+#: be recovered from prose — but part of that prose is *artifact-supplied*:
+#: ``TargetNotFound`` interpolates ``target.description``. Searching the whole
+#: string let a control described as "refused-items queue link" turn locator
+#: drift into a policy refusal, which pages an operator with "should this happen
+#: at all" and skips screen classification, so a 500 on that step was
+#: mislabelled too. Only the leading exception name is read, which is the one
+#: part of the string the artifact cannot write.
+ERROR_PREFIX = re.compile(r"^(\w+): ")
+
+
+def classify_error(error: str) -> FailureClass:
+    """What a failed action's error string says about the *kind* of failure.
+
+    Prefix-anchored on purpose, and still a compromise: the protocol gives the
+    engine no structural channel for this, so a second surface implementation
+    that formats its errors differently loses ``TARGET_NOT_FOUND`` and with it
+    the drift diagnosis. The honest fix is a failure class on ``ActionOutcome``.
+    """
+    if error.startswith(f"{PolicyRefused.__name__}: ") or error.startswith("refused "):
+        # A refusal is not the application misbehaving, so it is kept apart
+        # from every other error — including from the screen's opinion.
+        return FailureClass.POLICY_REFUSED
+    prefix = ERROR_PREFIX.match(error)
+    if prefix is not None and prefix.group(1) == TargetNotFound.__name__:
+        return FailureClass.TARGET_NOT_FOUND
+    return FailureClass.ACTION_FAILED
+
+
 class InvalidArguments(ValueError):
     """The caller's arguments do not satisfy the capability's declared inputs."""
 
@@ -715,16 +745,13 @@ class ReplayExecutor:
         error = report.error or ""
         observed = self._observed()
 
-        if "refused" in error:
+        from_step = classify_error(error)
+        if from_step is FailureClass.POLICY_REFUSED:
             from_screen = None
             failure_class = FailureClass.POLICY_REFUSED
         else:
             from_screen = self._classify_screen(observed)
-            failure_class = from_screen or (
-                FailureClass.TARGET_NOT_FOUND
-                if TargetNotFound.__name__ in error
-                else FailureClass.ACTION_FAILED
-            )
+            failure_class = from_screen or from_step
 
         evidence = self._capture(step.id)
         if from_screen is None:

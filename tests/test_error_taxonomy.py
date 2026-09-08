@@ -15,6 +15,7 @@ than asserted.
 import pytest
 
 from replay.artifact import ArtifactStore
+from replay.artifact.locators import SelectorLocator
 from replay.artifact.schema import ApprovalState, CapabilityArtifact
 from replay.engine import FailureClass, ReplayExecutor, ReplayStatus
 from replay.evidence import EvidenceRecorder
@@ -256,6 +257,42 @@ def test_the_engine_reads_those_markers_from_the_artifact_not_from_itself(
     assert result.failure.failure_class is not FailureClass.APPLICATION_ERROR, (
         "the classification came from the engine rather than the artifact"
     )
+
+
+def test_a_control_whose_name_contains_refused_is_still_locator_drift(meridian_server, tmp_path):
+    """The taxonomy was decided by searching the error text for "refused".
+
+    `TargetNotFound` interpolates the artifact's own `target.description`, so a
+    control named after the refused-items queue — an ordinary thing to find in
+    a back office — turned a vanished locator into a policy refusal. That pages
+    an operator asking "should this happen at all" about a step that was never
+    blocked, and skips screen classification, so a 500 or a session timeout on
+    the same step is mislabelled with it.
+    """
+    artifact = ArtifactStore("artifacts").load("lookup_balance")
+    drifted = artifact.model_copy(deep=True)
+    original = drifted.steps[1]
+    drifted.steps[1] = original.model_copy(
+        update={
+            "target": original.target.model_copy(
+                update={
+                    "description": "refused-items queue link",
+                    "strategies": [SelectorLocator(engine="css", expression="input[name='gone']")],
+                }
+            )
+        }
+    )
+
+    result = replay(
+        meridian_server,
+        tmp_path,
+        None,
+        "drift-refused-name",
+        capability=(drifted, {"member_id": "12345"}),
+    )
+
+    assert result.status is ReplayStatus.FAILED
+    assert result.failure.failure_class is FailureClass.TARGET_NOT_FOUND
 
 
 @pytest.mark.parametrize("injection", [Injection.TIMEOUT, Injection.ERROR500])
