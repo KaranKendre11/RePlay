@@ -43,6 +43,7 @@ from replay.artifact.schema import (
     Action,
     CapabilityArtifact,
     ParamRef,
+    RecoveryAction,
     Step,
     WaitKind,
 )
@@ -687,21 +688,48 @@ class ReplayExecutor:
             for _ in range(rule.max_attempts):
                 if not self._holds(rule.when):
                     break
-                self._apply(rule)
+                if not self._apply(rule):
+                    # The condition held and the recovery did not work. Writing
+                    # "recovered" here would say the interstitial was cleared
+                    # when it is still on screen, which is worse than silence:
+                    # the checkpoint failure that follows would look unexplained.
+                    self.recorder.event(
+                        "recovery_failed",
+                        step_id=step.id,
+                        rule=rule.do.value,
+                        when=_describe(rule.when),
+                    )
+                    break
                 report.recovered.append(f"{rule.do.value}:{_describe(rule.when)}")
                 self.recorder.event("recovered", step_id=step.id, rule=rule.do.value)
                 applied = True
         return applied
 
-    def _apply(self, rule: Any) -> None:
-        match rule.do.value:
-            case "click" | "dismiss":
-                if rule.target is not None:
+    def _apply(self, rule: Any) -> bool:
+        """Perform one recovery. Returns whether it actually happened.
+
+        A rule that did nothing must not be reported as one that worked. The
+        ``dismiss`` case used to be exactly that — the schema requires a target
+        only for ``click``, so a targetless dismiss fell through the guard and
+        recovered nothing while the evidence said otherwise. Without a target
+        there is only one thing to dismiss, and it is the dialog.
+        """
+        match rule.do:
+            case RecoveryAction.CLICK:
+                outcome = self.surface.act(Action.CLICK, rule.target, expect_navigation=True)
+            case RecoveryAction.DISMISS:
+                outcome = (
                     self.surface.act(Action.CLICK, rule.target, expect_navigation=True)
-            case "accept_dialog":
-                self.surface.act(Action.ACCEPT_DIALOG)
-            case "retry":
-                self.surface.act(Action.WAIT, value="1000")
+                    if rule.target is not None
+                    else self.surface.act(Action.DISMISS_DIALOG)
+                )
+            case RecoveryAction.ACCEPT_DIALOG:
+                outcome = self.surface.act(Action.ACCEPT_DIALOG)
+            case RecoveryAction.RETRY:
+                outcome = self.surface.act(Action.WAIT, value="1000")
+            case _:
+                return False
+        return outcome.ok
 
     def _classify_screen(self, observed: str) -> FailureClass | None:
         """Read the screen for conditions that outrank whatever step we are on.

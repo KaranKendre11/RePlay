@@ -15,7 +15,7 @@ than asserted.
 import pytest
 
 from replay.artifact import ArtifactStore
-from replay.artifact.locators import SelectorLocator
+from replay.artifact.locators import RoleNameLocator, SelectorLocator
 from replay.artifact.schema import ApprovalState, CapabilityArtifact
 from replay.engine import FailureClass, ReplayExecutor, ReplayStatus
 from replay.evidence import EvidenceRecorder
@@ -163,6 +163,38 @@ def test_transient_slowness_is_absorbed_by_the_declared_waits(meridian_server, t
 
     assert result.status is ReplayStatus.SUCCESS
     assert result.duration_ms > 3_000, "the injected delay was actually waited out"
+
+
+def test_a_recovery_that_did_not_work_is_not_recorded_as_one(meridian_server, tmp_path):
+    """ "Recovered silently" and "never happened" must not look the same — and
+    neither must "recovered" and "tried to recover and failed".
+
+    `_apply` ignored the outcome it got back, so a recovery click that could
+    not resolve its control still appended to `recovered`, wrote a `recovered`
+    event, and reported the rule as applied. The interstitial is still on
+    screen; the evidence said it had been cleared.
+    """
+    artifact = ArtifactStore("artifacts").load("lookup_balance")
+    broken = artifact.model_copy(deep=True)
+    rule = broken.steps[2].on_error[0]
+    broken.steps[2].on_error[0] = rule.model_copy(
+        update={
+            "target": rule.target.model_copy(
+                update={"strategies": [RoleNameLocator(role="link", name="No Such Link")]}
+            )
+        }
+    )
+
+    result = replay(
+        meridian_server,
+        tmp_path,
+        Injection.DIALOG,
+        "recover-broken-rule",
+        capability=(broken, {"member_id": "12345"}),
+    )
+
+    assert result.status is ReplayStatus.FAILED, "the interstitial was never cleared"
+    assert all(not step.recovered for step in result.steps)
 
 
 def test_recovery_is_bounded(meridian_server, tmp_path):
