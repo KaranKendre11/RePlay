@@ -573,6 +573,13 @@ def test_an_operator_can_unstick_a_run_that_gave_up(guarded_surface, recorder, m
     assert guarded_surface.controller is Controller.AUTOMATION, "control came back"
     assert any("a human intervened" in w for w in result.warnings), "and the run says so"
 
+    # Not only in the returned object: a reviewer arriving at the evidence
+    # directory later must meet "unproven" without going looking for it.
+    events = [json.loads(line) for line in (recorder.dir / "run.jsonl").read_text().splitlines()]
+    finished = next(e for e in events if e["kind"] == "run_finished")
+    assert any("unproven" in w for w in finished["warnings"])
+    assert "unproven" in (recorder.dir / "result.json").read_text()
+
     assert any(a.kind == "click" for a in asked.human_actions), "what they did was captured"
     assert not any(a.action is Action.CLICK for a in result.actions), (
         "but deliberately not written into the trace a capability is synthesised from"

@@ -295,7 +295,15 @@ class DiscoveryLoop:
             result.reason = f"unexpected {type(exc).__name__}: {exc}"
             self.recorder.event("run_crashed", error=result.reason)
         finally:
-            self.recorder.event("run_finished", status=result.status.value, reason=result.reason)
+            # The warnings ride on the terminal event as well as in result.json,
+            # because "this capability is unproven" is the one thing a reviewer
+            # must not have to go looking for.
+            self.recorder.event(
+                "run_finished",
+                status=result.status.value,
+                reason=result.reason,
+                warnings=result.warnings,
+            )
             self.recorder.result(result.to_dict())
         return result
 
