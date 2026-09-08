@@ -15,6 +15,7 @@ same tiers as the deployment it was recorded on.
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from replay.artifact import (
     ArtifactNotFound,
@@ -165,6 +166,22 @@ def test_an_override_for_the_wrong_capability_is_refused(base):
         apply_override(base, bad)
 
 
+def test_an_override_must_name_the_version_it_was_written_against(base):
+    """A bare name silently spans every future version.
+
+    An override built to match 1.1.0's steps would keep being applied to 2.0.0,
+    which is the one place a version bump cannot warn anybody.
+    """
+    with pytest.raises(ValidationError):
+        VariantOverride(base="lookup_balance", tenant="rogue")
+
+
+def test_an_override_is_saved_under_the_capability_it_specialises(base, tmp_path):
+    """The filename was a separate argument, never checked against ``base``."""
+    saved = OverrideStore(tmp_path).save(VariantOverride(base=base.ref, tenant="rogue"))
+    assert saved == tmp_path / "rogue" / "lookup_balance.json"
+
+
 def test_an_override_may_not_replace_a_checkpoint_with_a_tautology(base):
     """Otherwise a replay reports success for a flow that demonstrated nothing.
 
@@ -261,7 +278,7 @@ def test_a_tenant_replay_is_not_evidence_about_the_base_capability(base, northga
     deployment — so ``replay approve`` would stamp APPROVED on evidence
     gathered somewhere else entirely.
     """
-    from test_reliability import clean_history  # noqa: PLC0415
+    from test_reliability import clean_history
 
     specialised = apply_override(base, northgate)
     assert specialised.ref == f"{base.ref}#northgate"

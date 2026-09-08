@@ -85,9 +85,21 @@ class ArtifactStore:
         """Read one artifact file, or say precisely why it is not one."""
         path = Path(path)
         try:
-            return CapabilityArtifact.model_validate_json(path.read_text())
+            artifact = CapabilityArtifact.model_validate_json(path.read_text())
         except (ValidationError, json.JSONDecodeError, UnicodeDecodeError, OSError) as bad:
             raise ArtifactInvalid(f"{path} is not a readable capability artifact: {bad}") from bad
+        if path.name != f"{artifact.ref}.json":
+            # The filename is not decoration: it is the store's index, and
+            # `save`'s immutability guard is a check on it. A second,
+            # differently-selectored copy of a pinned ref under another
+            # filename would be listed by the catalogue as that ref and could be
+            # returned by an unversioned `load`, which is the immutability rule
+            # routed around by a `cp`.
+            raise ArtifactInvalid(
+                f"{path} declares {artifact.ref}, which belongs in {artifact.ref}.json; "
+                "a published version lives under exactly one filename"
+            )
+        return artifact
 
     def load(self, name: str, version: str | None = None) -> CapabilityArtifact:
         """Load a capability. Without a version, the highest semver wins."""

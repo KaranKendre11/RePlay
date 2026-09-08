@@ -146,7 +146,9 @@ def test_a_file_that_does_not_parse_is_an_answer_not_a_traceback(tmp_path):
 
     # And the endpoint answers identically whether or not the traversal target
     # happens to exist, so it says nothing about the filesystem.
-    assert broken.get(f"/capabilities/{CAPABILITY}/artifact?version=../../policy").status_code == 404
+    assert (
+        broken.get(f"/capabilities/{CAPABILITY}/artifact?version=../../policy").status_code == 404
+    )
     assert broken.get(f"/capabilities/{CAPABILITY}/artifact?version=../../nope").status_code == 404
 
 

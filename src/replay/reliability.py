@@ -201,37 +201,52 @@ def _scan(root: Path, ref: str) -> Iterator[RunRecord]:
     if not root.exists():
         return
     for log in sorted(root.glob("*/run.jsonl")):
+        try:
+            lines = log.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+
         arguments = "{}"
-        for line in log.read_text(encoding="utf-8").splitlines():
+        for line in lines:
+            # Evidence, not accounting: read what is legible and move on. A run
+            # killed mid-write leaves a partial last line, and a hand-edited or
+            # foreign log can hold a legible JSON line that is not an object
+            # (AttributeError on ``.get``), one with no ``ts`` (KeyError), or
+            # one whose stamp will not parse (ValueError) — none of which is a
+            # reason for ``replay run``'s post-run report and ``replay approve``
+            # to die.
             try:
                 record = json.loads(line)
-            except json.JSONDecodeError:
-                # A run killed mid-write leaves a partial last line. Evidence,
-                # not accounting: read what is legible and move on.
-                continue
 
-            if record.get("kind") == STARTED:
-                arguments = json.dumps(record.get("arguments", {}), sort_keys=True)
-                continue
-            if record.get("kind") != FINISHED or record.get("capability") != ref:
-                continue
+                if record.get("kind") == STARTED:
+                    arguments = json.dumps(record.get("arguments", {}), sort_keys=True)
+                    continue
+                if record.get("kind") != FINISHED or record.get("capability") != ref:
+                    continue
 
-            # A run refused at the door, or rejected for bad arguments, never
-            # touched the application: zero steps ran. Counting it would be
-            # counting the guardrail rather than the capability, and one
-            # refusal would poison the window of the capabilities the guardrail
-            # exists to protect.
-            if not record.get("steps"):
-                continue
+                # A run refused at the door, or rejected for bad arguments,
+                # never touched the application: zero steps ran. Counting it
+                # would be counting the guardrail rather than the capability,
+                # and one refusal would poison the window of the capabilities
+                # the guardrail exists to protect.
+                if not record.get("steps"):
+                    continue
 
-            yield RunRecord(
-                run_id=record.get("run_id", log.parent.name),
-                at=record["ts"],
-                status=record.get("status", "failed"),
-                drifting_steps=tuple(record.get("drifting_steps") or ()),
-                arguments=arguments,
-                evidence_dir=log.parent.name,
-            )
+                at = record["ts"]
+                # Parsed here rather than trusted: it is the sort key for the
+                # whole window and the value ``last_verified_at`` returns.
+                datetime.fromisoformat(at)
+                run = RunRecord(
+                    run_id=record.get("run_id", log.parent.name),
+                    at=at,
+                    status=record.get("status", "failed"),
+                    drifting_steps=tuple(record.get("drifting_steps") or ()),
+                    arguments=arguments,
+                    evidence_dir=log.parent.name,
+                )
+            except (ValueError, AttributeError, KeyError, TypeError):
+                continue
+            yield run
 
 
 def promotion_blockers(

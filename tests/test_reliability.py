@@ -172,6 +172,47 @@ def test_a_run_refused_at_the_door_is_not_counted(meridian_server, write_capabil
     assert tally(tmp_path, write_capability.ref).replays == 0
 
 
+def test_an_illegible_evidence_line_does_not_kill_the_report(artifact, tmp_path):
+    """The scan caught only `JSONDecodeError`, and three other things can happen.
+
+    A legible JSON line that is not an object raises `AttributeError` on
+    `.get`, one with no `ts` raises `KeyError`, and a malformed stamp raises
+    `ValueError` out of `fromisoformat` — each of which killed `replay run`'s
+    post-run report and `replay approve` outright.
+    """
+    fabricate(tmp_path, artifact.ref, [{"status": "success"}])
+    log = tmp_path / "replay-00" / "run.jsonl"
+    log.write_text(
+        "\n".join(
+            [
+                '"a legible line that is not an object"',
+                json.dumps(
+                    {
+                        "kind": "replay_finished",
+                        "capability": artifact.ref,
+                        "steps": ONE_STEP,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "replay_finished",
+                        "capability": artifact.ref,
+                        "steps": ONE_STEP,
+                        "ts": "the day before yesterday",
+                    }
+                ),
+                "{ truncated mid-wri",
+                log.read_text().strip(),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    counted = tally(tmp_path, artifact.ref)
+    assert counted.replays == 1, "the one legible run, and no exception"
+    assert counted.last_verified_at == datetime(2026, 9, 1, tzinfo=UTC)
+
+
 def test_a_failed_run_does_not_move_the_last_verified_stamp(artifact, tmp_path):
     """ "Last verified" has to mean verified. A malfunction verifies nothing."""
     fabricate(
@@ -382,9 +423,7 @@ def test_approving_writes_the_evidence_it_rested_on_into_the_artifact(artifact, 
     assert reloaded.last_verified_at is not None
 
 
-def test_the_store_refuses_to_stamp_an_approval_the_evidence_does_not_support(
-    artifact, tmp_path
-):
+def test_the_store_refuses_to_stamp_an_approval_the_evidence_does_not_support(artifact, tmp_path):
     """The threshold has to live where every caller routes through.
 
     ``approve`` used to write whatever ``Reliability`` it was handed, so

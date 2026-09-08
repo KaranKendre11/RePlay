@@ -385,6 +385,22 @@ def test_saving_never_truncates_the_published_file_in_place(tmp_path, monkeypatc
     assert list(tmp_path.iterdir()) == [path], "and no half-written file left behind"
 
 
+def test_a_second_copy_under_another_filename_is_not_the_catalogue_entry(tmp_path):
+    """`save`'s immutability guard is a check on the filename.
+
+    A differently-selectored copy of a pinned ref, dropped in under any other
+    name, was listed by the catalogue as that ref and could be returned by an
+    unversioned `load` — the immutability rule routed around with a `cp`.
+    """
+    store = ArtifactStore(tmp_path)
+    published = store.save(artifact())
+    (tmp_path / "lookup_balance-hotfix.json").write_text(published.read_text())
+
+    assert [a.ref for a in store.list_all()] == ["lookup_balance@1.0.0"]
+    with pytest.raises(ArtifactInvalid, match="belongs in"):
+        store.load_path(tmp_path / "lookup_balance-hotfix.json")
+
+
 def test_listing_is_the_catalogue(tmp_path):
     store = ArtifactStore(tmp_path)
     store.save(artifact())

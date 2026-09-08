@@ -50,6 +50,11 @@ from replay.artifact.schema import (
 
 DEFAULT_ROOT = Path("overrides")
 
+#: What ``base`` must name: one published version, exactly. A bare capability
+#: name would silently span every future version of it, so a recording made
+#: against 1.1.0 would keep having a 1.1.0-shaped override applied to 2.0.0.
+BASE_REF = r"^[a-z][a-z0-9_]*@\d+\.\d+\.\d+$"
+
 
 class OverrideRejected(ValueError):
     """The override would change something it is not allowed to change."""
@@ -64,7 +69,10 @@ class VariantOverride(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    base: str = Field(description="The capability this specialises, as name@version.")
+    base: str = Field(
+        pattern=BASE_REF,
+        description="The exact published version this specialises, as name@version.",
+    )
     tenant: Tenant
     note: str = Field(default="", description="What differs about this deployment, for a reviewer.")
 
@@ -90,7 +98,7 @@ class VariantOverride(BaseModel):
 
 def apply_override(artifact: CapabilityArtifact, override: VariantOverride) -> CapabilityArtifact:
     """Specialise a capability for one tenant, or refuse."""
-    if override.base not in (artifact.ref, artifact.name):
+    if override.base != artifact.ref:
         raise OverrideRejected(
             f"override targets {override.base!r} but was applied to {artifact.ref!r}"
         )
@@ -237,9 +245,7 @@ class OverrideStore:
         was not constrained at all.
         """
         if not TENANT.match(tenant):
-            raise OverrideRejected(
-                f"{tenant!r} is not a tenant name; expected {TENANT.pattern}"
-            )
+            raise OverrideRejected(f"{tenant!r} is not a tenant name; expected {TENANT.pattern}")
         if not IDENTIFIER.match(name):
             raise OverrideRejected(f"{name!r} is not a capability name")
         return self.root / tenant / f"{name}.json"
@@ -256,8 +262,16 @@ class OverrideStore:
             # override that overreaches: this tenant cannot be specialised.
             raise OverrideRejected(f"{path} is not a readable override: {bad}") from bad
 
-    def save(self, override: VariantOverride, name: str) -> Path:
-        path = self.path_for(override.tenant, name)
+    def save(self, override: VariantOverride) -> Path:
+        """Write an override under the capability it says it specialises.
+
+        The filename used to be a separate argument that was never checked
+        against ``base``, so an override for ``lookup_balance`` could be written
+        as ``open_subaccount.json`` — where it would be loaded for
+        ``open_subaccount``, rejected by :func:`apply_override`, and in the
+        meantime occupy the filename that tenant's real override needed.
+        """
+        path = self.path_for(override.tenant, override.base.split("@")[0])
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = override.model_dump(mode="json", exclude_none=True)
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
