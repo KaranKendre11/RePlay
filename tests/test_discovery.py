@@ -232,6 +232,25 @@ def test_a_false_success_claim_is_rejected(surface, recorder, meridian_server):
     assert "not present on the current screen" in result.reason
 
 
+@pytest.mark.parametrize("checkpoint", ["", "   "])
+def test_a_success_claim_with_no_checkpoint_is_rejected(
+    surface, recorder, meridian_server, checkpoint
+):
+    """Absent is not verified.
+
+    An empty checkpoint used to skip verification entirely, so a model that
+    called finish on turn one produced a goal_met run — and a capability that
+    asserts nothing about the state it supposedly reached.
+    """
+    llm = MockLLM(
+        [ToolCall(name="finish", arguments={"summary": "Done.", "checkpoint_text": checkpoint})]
+    )
+    result = DiscoveryLoop(surface, llm, recorder, vision=False).run("goal", meridian_server)
+
+    assert result.status is StopReason.ERROR
+    assert "without checkpoint text" in result.reason
+
+
 def test_a_bad_index_is_fed_back_rather_than_fatal(surface, recorder, meridian_server):
     """A run that dies on the first mistake tells us nothing about recovery."""
     surface.act(Action.NAVIGATE, value=meridian_server)

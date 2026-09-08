@@ -631,7 +631,21 @@ class DiscoveryLoop:
         # The model claims success; verify the claim against the live screen
         # before believing it. An unverified checkpoint would be recorded into
         # the artifact and asserted on every future replay.
-        if checkpoint and checkpoint not in self._visible_text():
+        #
+        # Absent is not verified. `checkpoint_text` is a required argument but
+        # nothing on the provider side enforces that it is non-empty, so an empty
+        # or whitespace-only string is routine model output — and treating it as
+        # "nothing to check" would let a bare `finish` on turn one produce a
+        # capability that asserts nothing.
+        if not checkpoint:
+            result.status = StopReason.ERROR
+            result.reason = (
+                "model claimed success without checkpoint text, so there is nothing "
+                "on the screen proving the goal was met"
+            )
+            return
+
+        if checkpoint not in self._visible_text():
             result.status = StopReason.ERROR
             result.reason = (
                 f"model claimed success with checkpoint {checkpoint!r}, "
