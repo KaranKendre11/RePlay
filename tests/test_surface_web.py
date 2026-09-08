@@ -14,6 +14,8 @@ from replay.artifact import ArtifactStore
 from replay.artifact.conditions import (
     AllOf,
     AnyOf,
+    ElementIs,
+    ElementState,
     HttpStatusIs,
     Not,
     RoleNameVisible,
@@ -439,6 +441,21 @@ def test_http_status_reports_the_frame_whose_content_is_being_judged(surface, me
     assert surface.observe(screenshot=False).http_status == 440
     assert surface.evaluate(HttpStatusIs(status=440))
     assert not surface.evaluate(HttpStatusIs(status=200))
+
+
+def test_a_malformed_selector_makes_a_condition_false_rather_than_raising(surface):
+    """Regression: the two call sites of ``_build`` disagreed about selector errors.
+
+    ``resolve`` catches a ``PlaywrightError`` from ``count()`` and records the
+    strategy as a miss; ``_element_state_matches`` left ``count()`` outside its
+    ``try``, so the same broken selector escaped ``evaluate`` raw.
+    """
+    broken = ElementIs(
+        locator=SelectorLocator(engine="css", expression="input["),
+        state=ElementState.VISIBLE,
+    )
+    assert surface.evaluate(broken) is False
+    assert surface.evaluate(Not(condition=broken)) is True
 
 
 # ---------- the protocol ----------

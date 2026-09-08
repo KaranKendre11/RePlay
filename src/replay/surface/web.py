@@ -911,13 +911,21 @@ class WebSurface:
         return "\n".join(self.text_of(p) for p in self._frame_paths())
 
     def _element_state_matches(self, condition: ElementIs) -> bool:
+        """Whether some frame holds this element in this state.
+
+        Both call sites of :meth:`_build` own the errors a built locator can
+        raise. ``count()`` used to sit outside the ``try`` here, so a malformed
+        selector left ``evaluate`` as a raw ``PlaywrightError`` from one call
+        site and as "0 matches" from the other. A selector that cannot be
+        parsed is a selector that matches nothing.
+        """
+        nth = self._nth_of(condition.locator)
         for path in self._frame_paths():
             try:
                 locator = self._build(self.frame_for(path), condition.locator)
-            except FrameNotFound:
-                continue
-            nth = self._nth_of(condition.locator)
-            if locator is None or locator.count() <= nth:
+                if locator is None or locator.count() <= nth:
+                    continue
+            except (FrameNotFound, PlaywrightError, PlaywrightTimeout):
                 continue
             element = locator.nth(nth)
             try:
