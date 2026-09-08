@@ -430,28 +430,36 @@ class ReplayExecutor:
                         ),
                         evidence=self._capture(step.id),
                     )
+                    self._record(index, report)
                     return
                 self._settle_after_handoff(step)
-                if not self._after_step(result, step, report):
+                proceed = self._after_step(result, step, report)
+                self._record(index, report)
+                if not proceed:
                     return
                 continue
 
-            report = self._perform(step, bound, index)
+            report = self._perform(step, bound)
             result.steps.append(report)
 
             if not report.ok:
                 failure = self._diagnose(step, report)
+                self._record(index, report)
                 if self._escalate(result, failure, step):
                     # A person intervened on the live session. Retry the step
                     # rather than assuming their fix put us where we needed to
                     # be — the whole point of a checkpoint is not to assume.
-                    report = self._perform(step, bound, index)
+                    report = self._perform(step, bound)
                     result.steps.append(report)
+                    if not report.ok:
+                        self._record(index, report)
                 if not report.ok:
                     result.failure = self._diagnose(step, report)
                     return
 
-            if not self._after_step(result, step, report):
+            proceed = self._after_step(result, step, report)
+            self._record(index, report)
+            if not proceed:
                 return
 
         result.outputs = self._extract_outputs()
@@ -582,7 +590,19 @@ class ReplayExecutor:
         """
         return StepReport(step_id=step.id, intent=step.intent, action=step.action.value, ok=True)
 
-    def _perform(self, step: Step, bound: dict[str, str], index: int) -> StepReport:
+    def _record(self, index: int, report: StepReport) -> None:
+        """Write the step's line in the run log, once its fate is settled.
+
+        After the checkpoint, not before it. ``_perform`` used to log the moment
+        the action returned, so ``run.jsonl`` permanently said ``ok: true,
+        recovered: []`` for a step whose recovery rules then fired and whose
+        checkpoint then failed — while ``result.json``'s copy of the same step
+        said otherwise. Two records of one step, disagreeing, in one evidence
+        directory, and the log is the one a reviewer reads first.
+        """
+        self.recorder.event("step", index=index, **report.to_dict())
+
+    def _perform(self, step: Step, bound: dict[str, str]) -> StepReport:
         started = time.monotonic()
         report = StepReport(
             step_id=step.id,
@@ -627,7 +647,6 @@ class ReplayExecutor:
         if outcome.read_value is not None:
             self._reads[step.id] = outcome.read_value
 
-        self.recorder.event("step", index=index, **report.to_dict())
         return report
 
     # -- interpretation ---------------------------------------------------

@@ -185,6 +185,28 @@ def test_a_checkpoint_may_name_an_argument_the_caller_supplied(artifact):
     assert any("member_id" in parameters_in(c) for c in checked)
 
 
+def test_the_log_and_the_result_agree_about_a_step(artifact, tmp_path):
+    """One step, two records, one evidence directory — they have to match.
+
+    `_perform` wrote its `step` event the moment the action returned, before
+    the recovery rules fired and before the checkpoint ran. So `run.jsonl` said
+    `recovered: []` for a step that recovered twice and then failed, while
+    `result.json`'s copy of the same step said otherwise.
+    """
+    with EvidenceRecorder("step-record", root=tmp_path) as recorder:
+        result = ReplayExecutor(
+            MinimalSurface("SYSTEM NOTICE\nScheduled maintenance"), artifact, recorder=recorder
+        ).run({"member_id": "12345"})
+
+    logged = [json.loads(line) for line in (recorder.dir / "run.jsonl").read_text().splitlines()]
+    by_id = {e["step_id"]: e for e in logged if e["kind"] == "step"}
+
+    assert result.steps[-1].recovered, "the recovery rule fired"
+    for step in result.steps:
+        assert by_id[step.step_id]["recovered"] == step.recovered
+        assert by_id[step.step_id]["ok"] == step.ok
+
+
 # ---------- business outcomes ----------
 
 
