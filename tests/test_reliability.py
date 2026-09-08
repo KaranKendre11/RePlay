@@ -25,7 +25,7 @@ import pytest
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
-from replay.artifact import ArtifactStore
+from replay.artifact import ArtifactStore, NotApprovable
 from replay.artifact.schema import ApprovalState, Reliability
 from replay.cli import app
 from replay.engine import ReplayExecutor, ReplayStatus
@@ -374,15 +374,47 @@ def test_approving_writes_the_evidence_it_rested_on_into_the_artifact(artifact, 
     store.save(artifact)
     clean_history(artifact.ref, evidence)
 
-    counted = tally(evidence, artifact.ref)
-    store.approve(
-        artifact.name, artifact.version, counted.snapshot(approval=ApprovalState.APPROVED)
-    )
+    store.approve(artifact.name, artifact.version, tally(evidence, artifact.ref))
 
     reloaded = store.load(artifact.name, artifact.version).reliability
     assert reloaded.approval is ApprovalState.APPROVED
     assert (reloaded.replays, reloaded.successes, reloaded.outcomes) == (WINDOW, 4, 1)
     assert reloaded.last_verified_at is not None
+
+
+def test_the_store_refuses_to_stamp_an_approval_the_evidence_does_not_support(
+    artifact, tmp_path
+):
+    """The threshold has to live where every caller routes through.
+
+    ``approve`` used to write whatever ``Reliability`` it was handed, so
+    ``Reliability(replays=0, approval=APPROVED)`` — which passes every field
+    validator — made a capability trusted unattended on no runs at all, and
+    ``RiskGate`` believed the field. The only check was in ``cli.approve``,
+    on the one code path an operator happens to type.
+    """
+    store = ArtifactStore(tmp_path / "artifacts")
+    store.save(artifact)
+
+    with pytest.raises(NotApprovable, match="0 recorded runs"):
+        store.approve(artifact.name, artifact.version, tally(tmp_path / "empty", artifact.ref))
+
+    assert store.load(artifact.name, artifact.version).reliability.approval is ApprovalState.DRAFT
+
+
+def test_evidence_from_one_capability_cannot_approve_another(artifact, write_capability, tmp_path):
+    """Including a tenant's evidence, which now carries its own ref."""
+    store = ArtifactStore(tmp_path / "artifacts")
+    store.save(artifact)
+    store.save(write_capability)
+    clean_history(artifact.ref, tmp_path / "evidence")
+
+    with pytest.raises(NotApprovable, match="evidence offered is for"):
+        store.approve(
+            write_capability.name,
+            write_capability.version,
+            tally(tmp_path / "evidence", artifact.ref),
+        )
 
 
 def test_approving_changes_the_reliability_block_and_nothing_else(artifact, tmp_path):
@@ -393,9 +425,10 @@ def test_approving_changes_the_reliability_block_and_nothing_else(artifact, tmp_
     it is allowed in place, and the way that stays true is that nothing else can
     ride along with it.
     """
-    store = ArtifactStore(tmp_path)
+    store = ArtifactStore(tmp_path / "artifacts")
     store.save(artifact)
-    store.approve(artifact.name, artifact.version, Reliability(approval=ApprovalState.APPROVED))
+    clean_history(artifact.ref, tmp_path / "evidence")
+    store.approve(artifact.name, artifact.version, tally(tmp_path / "evidence", artifact.ref))
 
     after = store.load(artifact.name, artifact.version)
     assert after.version == artifact.version, "approval is not a new version"
@@ -408,12 +441,13 @@ def test_approving_cannot_smuggle_a_step_change_past_the_immutability_rule(artif
     An approval that accepted a caller-supplied artifact would be a way to edit
     a pinned version's steps while calling it a policy change.
     """
-    store = ArtifactStore(tmp_path)
+    store = ArtifactStore(tmp_path / "artifacts")
     store.save(artifact)
+    clean_history(artifact.ref, tmp_path / "evidence")
 
     tampered = artifact.model_copy(deep=True)
     tampered.steps[0].intent = "something else entirely"
-    store.approve(tampered.name, tampered.version, Reliability(approval=ApprovalState.APPROVED))
+    store.approve(tampered.name, tampered.version, tally(tmp_path / "evidence", artifact.ref))
 
     assert store.load(artifact.name, artifact.version).steps[0].intent == artifact.steps[0].intent
 
@@ -434,12 +468,13 @@ def test_approval_is_what_the_risk_gate_was_waiting_for(write_capability, tmp_pa
     ``RiskGate`` has always refused an unapproved capability that requires
     approval. Until now the only way past it was somebody editing JSON.
     """
-    store = ArtifactStore(tmp_path)
+    store = ArtifactStore(tmp_path / "artifacts")
     store.save(write_capability)
+    clean_history(write_capability.ref, tmp_path / "evidence")
     gate = RiskGate(allow_risky=True, allow_irreversible=True)
 
     name, version = write_capability.name, write_capability.version
-    store.approve(name, version, Reliability(approval=ApprovalState.APPROVED))
+    store.approve(name, version, tally(tmp_path / "evidence", write_capability.ref))
     gate.check_capability(store.load(name, version))
 
 

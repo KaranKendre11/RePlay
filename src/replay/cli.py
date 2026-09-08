@@ -397,12 +397,12 @@ def approve(
 
     Deliberately a separate command rather than something a run does to itself.
     Approval is what lets a capability be invoked unattended, so it should be an
-    act someone performs and can be asked about — the threshold below is a floor
-    on that act, not a substitute for it.
+    act someone performs and can be asked about — the threshold is a floor on
+    that act, not a substitute for it. The floor lives in ``store.approve``,
+    where every caller routes through; this command is where it is *explained*.
     """
-    from replay.artifact import ArtifactNotFound, ArtifactStore
-    from replay.artifact.schema import ApprovalState
-    from replay.reliability import promotion_blockers, tally
+    from replay.artifact import ArtifactNotFound, ArtifactStore, NotApprovable
+    from replay.reliability import tally
 
     store = ArtifactStore()
     try:
@@ -415,16 +415,14 @@ def approve(
     typer.secho(f"{artifact.ref}", fg=typer.colors.CYAN, nl=False)
     typer.echo(f"  {tallied.summary()}")
 
-    blockers = promotion_blockers(tallied, artifact)
-    if blockers:
+    try:
+        path = store.approve(artifact.name, artifact.version, tallied)
+    except NotApprovable as refused:
         typer.secho("refusing to approve:", fg=typer.colors.RED, err=True)
-        for blocker in blockers:
+        for blocker in refused.blockers:
             typer.secho(f"  - {blocker}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from refused
 
-    path = store.approve(
-        artifact.name, artifact.version, tallied.snapshot(approval=ApprovalState.APPROVED)
-    )
     typer.secho(f"approved:  {artifact.ref} → {path}", fg=typer.colors.GREEN)
     typer.echo(f"cited:     {tallied.summary()}, last verified {tallied.last_verified_at}")
 

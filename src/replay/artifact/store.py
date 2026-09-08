@@ -16,10 +16,14 @@ import logging
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
-from replay.artifact.schema import IDENTIFIER, SEMVER, CapabilityArtifact, Reliability
+from replay.artifact.schema import IDENTIFIER, SEMVER, ApprovalState, CapabilityArtifact
+
+if TYPE_CHECKING:
+    from replay.reliability import ReliabilityTally
 
 DEFAULT_ROOT = Path("artifacts")
 
@@ -39,6 +43,19 @@ class ArtifactInvalid(ValueError):
     ``ValidationError`` escape — is how a single bad file gets reported as a
     server fault rather than as the one capability that needs fixing.
     """
+
+
+class NotApprovable(ValueError):
+    """The recorded evidence does not support approving this version.
+
+    Carries the individual reasons, because an operator refused promotion needs
+    to know what to go and do about it.
+    """
+
+    def __init__(self, ref: str, blockers: list[str]) -> None:
+        super().__init__(f"refusing to approve {ref}: " + "; ".join(blockers))
+        self.ref = ref
+        self.blockers = blockers
 
 
 class ArtifactStore:
@@ -137,8 +154,21 @@ class ArtifactStore:
         _write_atomically(path, serialize(artifact))
         return path
 
-    def approve(self, name: str, version: str, reliability: Reliability) -> Path:
+    def approve(self, name: str, version: str, tallied: ReliabilityTally) -> Path:
         """Record an approval decision against an already-published version.
+
+        Takes the *evidence*, not a reliability block. It used to accept any
+        ``Reliability`` a caller handed it and write it, so
+        ``Reliability(replays=0, approval=APPROVED)`` — which passes every
+        field validator — stamped a capability as trusted unattended on no runs
+        at all, and ``RiskGate`` then believed the field. The entire promotion
+        threshold lived in ``cli.approve``: a presentation-layer check on the
+        one code path an operator happens to type, with ``promotion_blockers``
+        consulted nowhere else.
+
+        So the counters are derived here from the runs on disk, and the
+        threshold is applied here, which is where every caller routes through.
+        Approval is earned, not typed.
 
         The single sanctioned in-place edit of a published artifact, and it is
         narrow on purpose. ``save`` refuses to clobber because a caller that
@@ -156,8 +186,24 @@ class ArtifactStore:
         against, and the resulting diff is the reliability block and nothing
         else — which is what makes it reviewable.
         """
+        # Imported here rather than at module scope: reliability reads the
+        # schema this package exports, and the store is what that package
+        # imports first.
+        from replay.reliability import promotion_blockers
+
         published = self.load(name, version)
-        updated = published.model_copy(update={"reliability": reliability})
+        if tallied.ref != published.ref:
+            raise NotApprovable(
+                published.ref,
+                [f"the evidence offered is for {tallied.ref}, not {published.ref}"],
+            )
+        blockers = promotion_blockers(tallied, published)
+        if blockers:
+            raise NotApprovable(published.ref, blockers)
+
+        updated = published.model_copy(
+            update={"reliability": tallied.snapshot(approval=ApprovalState.APPROVED)}
+        )
         path = self.path_for(name, version)
         _write_atomically(path, serialize(updated))
         return path
