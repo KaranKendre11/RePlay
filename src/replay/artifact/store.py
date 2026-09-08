@@ -12,16 +12,33 @@ already the catalogue.
 from __future__ import annotations
 
 import json
+import logging
+import os
 from collections.abc import Iterator
 from pathlib import Path
+
+from pydantic import ValidationError
 
 from replay.artifact.schema import CapabilityArtifact, Reliability
 
 DEFAULT_ROOT = Path("artifacts")
 
+log = logging.getLogger(__name__)
+
 
 class ArtifactNotFound(LookupError):
     pass
+
+
+class ArtifactInvalid(ValueError):
+    """A file is present but is not the capability artifact it claims to be.
+
+    Distinct from :class:`ArtifactNotFound` on purpose. "There is nothing here"
+    and "there is something here and it is broken" call for different reactions
+    from an operator, and collapsing them into one error — or letting the raw
+    ``ValidationError`` escape — is how a single bad file gets reported as a
+    server fault rather than as the one capability that needs fixing.
+    """
 
 
 class ArtifactStore:
@@ -36,7 +53,12 @@ class ArtifactStore:
     # -- read -------------------------------------------------------------
 
     def load_path(self, path: Path | str) -> CapabilityArtifact:
-        return CapabilityArtifact.model_validate_json(Path(path).read_text())
+        """Read one artifact file, or say precisely why it is not one."""
+        path = Path(path)
+        try:
+            return CapabilityArtifact.model_validate_json(path.read_text())
+        except (ValidationError, json.JSONDecodeError, UnicodeDecodeError, OSError) as bad:
+            raise ArtifactInvalid(f"{path} is not a readable capability artifact: {bad}") from bad
 
     def load(self, name: str, version: str | None = None) -> CapabilityArtifact:
         """Load a capability. Without a version, the highest semver wins."""
@@ -55,10 +77,25 @@ class ArtifactStore:
         return sorted(self._iter_all(), key=lambda a: (a.name, a.version_tuple))
 
     def _iter_all(self) -> Iterator[CapabilityArtifact]:
+        """Every readable artifact in the directory, skipping the ones that are not.
+
+        The catalogue is the directory — drop a file in, it is callable; delete
+        it, it is gone. One unreadable file has to mean *that* capability is
+        gone, not all of them: propagating the error would take ``list_all``,
+        ``names`` and every unversioned ``load`` down with it, so a corrupt
+        ``lookup_balance@1.1.0.json`` would make ``open_subaccount``
+        uninvocable too, and ``GET /capabilities`` a 500.
+
+        Logged rather than swallowed. A capability that silently stops being
+        offered is the same class of problem in the other direction.
+        """
         if not self.root.exists():
             return
         for path in sorted(self.root.glob("*.json")):
-            yield self.load_path(path)
+            try:
+                yield self.load_path(path)
+            except ArtifactInvalid as bad:
+                log.warning("skipping unreadable artifact: %s", bad)
 
     def names(self) -> list[str]:
         return sorted({a.name for a in self.list_all()})
@@ -79,7 +116,7 @@ class ArtifactStore:
                 f"editing a published capability (or pass overwrite=True)"
             )
         self.root.mkdir(parents=True, exist_ok=True)
-        path.write_text(serialize(artifact))
+        _write_atomically(path, serialize(artifact))
         return path
 
     def approve(self, name: str, version: str, reliability: Reliability) -> Path:
@@ -104,8 +141,30 @@ class ArtifactStore:
         published = self.load(name, version)
         updated = published.model_copy(update={"reliability": reliability})
         path = self.path_for(name, version)
-        path.write_text(serialize(updated))
+        _write_atomically(path, serialize(updated))
         return path
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    """Write via a sibling temp file and rename.
+
+    ``os.replace`` is atomic, so a crash, a kill, or a full disk part-way
+    through leaves the previous file intact instead of a truncated one — and a
+    truncated artifact is precisely the input that used to take the whole
+    catalogue down. The store's own writes should not be able to manufacture
+    the corruption the reader has to tolerate.
+
+    Sibling rather than ``/tmp`` because ``os.replace`` is only atomic within a
+    filesystem, and the temp name is dot-prefixed so a half-written artifact is
+    never picked up by the ``*.json`` scan.
+    """
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def serialize(artifact: CapabilityArtifact) -> str:

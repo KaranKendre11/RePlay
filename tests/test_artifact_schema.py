@@ -7,12 +7,14 @@ against a bank system.
 """
 
 import json
+import os
 from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
 from replay.artifact import (
+    ArtifactInvalid,
     ArtifactNotFound,
     ArtifactStore,
     CapabilityArtifact,
@@ -267,7 +269,7 @@ def test_an_artifact_carrying_an_uncompilable_pattern_will_not_load(tmp_path):
     document["inputs"][0]["pattern"] = r"(\d{5}"
     (tmp_path / "lookup_balance@1.0.0.json").write_text(json.dumps(document))
 
-    with pytest.raises(ValidationError, match="not a valid regular expression"):
+    with pytest.raises(ArtifactInvalid, match="not a valid regular expression"):
         ArtifactStore(tmp_path).load("lookup_balance", "1.0.0")
 
 
@@ -321,6 +323,42 @@ def test_load_without_a_version_returns_the_highest_semver(tmp_path):
 def test_missing_artifact_raises(tmp_path):
     with pytest.raises(ArtifactNotFound):
         ArtifactStore(tmp_path).load("nope")
+
+
+def test_one_unreadable_file_does_not_take_down_the_catalogue(tmp_path):
+    """Drop a file in, it is callable; delete it, it is gone — one file at a time.
+
+    A truncated ``lookup_balance`` used to propagate out of ``list_all``,
+    ``names`` and every unversioned ``load``, so it made ``open_subaccount``
+    uninvocable and ``GET /capabilities`` a 500.
+    """
+    store = ArtifactStore(tmp_path)
+    store.save(artifact(name="open_subaccount"))
+    (tmp_path / "lookup_balance@1.1.0.json").write_text('{"schema_version": "1.0", "na')
+
+    assert store.names() == ["open_subaccount"]
+    assert store.load("open_subaccount").ref == "open_subaccount@1.0.0"
+
+
+def test_saving_never_truncates_the_published_file_in_place(tmp_path, monkeypatch):
+    """The store must not manufacture the corruption its reader has to tolerate.
+
+    The destination is only ever swapped in by rename, so a write that dies
+    part-way leaves the previously published version readable.
+    """
+    store = ArtifactStore(tmp_path)
+    path = store.save(artifact())
+    original = path.read_text()
+
+    def _dying_disk(*_args, **_kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(os, "replace", _dying_disk)
+    with pytest.raises(OSError, match="No space left"):
+        store.save(artifact(title="Rewritten"), overwrite=True)
+
+    assert path.read_text() == original
+    assert list(tmp_path.iterdir()) == [path], "and no half-written file left behind"
 
 
 def test_listing_is_the_catalogue(tmp_path):

@@ -22,6 +22,7 @@ from replay.artifact.schema import (
     TargetSpec,
 )
 from replay.artifact.store import (
+    ArtifactInvalid,
     ArtifactNotFound,
     ArtifactStore,
     invocation_schema,
@@ -33,6 +34,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "Action",
     "AppRef",
+    "ArtifactInvalid",
     "ArtifactNotFound",
     "ArtifactStore",
     "BusinessOutcome",
