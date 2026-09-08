@@ -267,6 +267,37 @@ def test_a_bad_index_is_fed_back_rather_than_fatal(surface, recorder, meridian_s
     assert any(e["kind"] == "bad_index" for e in events)
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        ToolCall(name="click_button", arguments={"index": 0}),
+        ToolCall(name="type_text", arguments={"index": 0, "text": "x", "parameter_name": {"a": 1}}),
+        ToolCall(name="type_text", arguments={"index": 0, "text": "x", "parameter_name": 7}),
+        ToolCall(name="type_text", arguments={"index": 0, "text": None}),
+        ToolCall(name="press", arguments={"index": 0, "key": None}),
+        ToolCall(name="click", arguments={}),
+    ],
+)
+def test_a_malformed_call_is_fed_back_rather_than_acted_on(
+    surface, recorder, meridian_server, bad
+):
+    """The model is untrusted input, so its shape is checked before it is used.
+
+    Every one of these used to either raise out of the run or be silently
+    coerced — a null text became the four characters "None", typed into a live
+    form and recorded into the artifact as the example value.
+    """
+    llm = MockLLM([bad, ToolCall(name="give_up", arguments={"reason": "after a bad call"})])
+    result = DiscoveryLoop(surface, llm, recorder, vision=False).run("goal", meridian_server)
+
+    assert result.status is StopReason.GAVE_UP, "the run survived and carried on"
+    assert result.parameters == {} and result.outputs == {}
+    assert not any(a.value == "None" for a in result.actions), "nothing coerced from null"
+
+    events = [json.loads(line) for line in (recorder.dir / "run.jsonl").read_text().splitlines()]
+    assert any(e["kind"] == "bad_call" for e in events), "and the model was told what was wrong"
+
+
 def test_repeating_the_same_decision_stops_the_run(surface, recorder, meridian_server):
     surface.act(Action.NAVIGATE, value=meridian_server)
     repeat = ToolCall(name="click", arguments={"index": 0})

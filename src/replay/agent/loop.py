@@ -12,9 +12,9 @@ in a growing message history. That keeps token use flat over a long run, removes
 a whole class of tool-call pairing bugs, and — more usefully — means the loop
 behaves the same on turn 20 as on turn 2.
 
-**Failures are fed back, not raised.** A bad index, a missed click or a URL the
-allowlist refuses becomes a line in the action log that the model can see and
-respond to. A run that dies on the first mistake teaches us nothing about whether
+**Failures are fed back, not raised.** A bad index, a call outside the
+vocabulary, an argument of the wrong type, a missed click or a URL the allowlist
+refuses becomes a line in the action log that the model can see and respond to. A run that dies on the first mistake teaches us nothing about whether
 the model can recover, which is exactly what we need to know before trusting it
 to record a capability.
 
@@ -36,7 +36,7 @@ from typing import Any
 
 from replay.agent.llm import LLMClient, LLMError, image_content
 from replay.agent.prompt import SYSTEM, goal_message, render_observation
-from replay.agent.vocabulary import TERMINAL_TOOLS, TOOLS, ToolCall
+from replay.agent.vocabulary import TERMINAL_TOOLS, TOOLS, ToolCall, validate
 from replay.artifact.schema import Action, TargetSpec
 from replay.escalation.control import (
     EscalationHandler,
@@ -356,6 +356,18 @@ class DiscoveryLoop:
                 if self._escalate(result, goal, step, observation, rendered, refs):
                     continue
                 return
+
+            refusal = validate(call)
+            if refusal:
+                # The model is an untrusted input source, so a call that is not
+                # in the vocabulary, or whose arguments are not the declared
+                # types, is fed back exactly like a bad index: the model sees
+                # precisely what was wrong and gets another turn. Acting on it
+                # would mean typing the string "None" into a live form, or using
+                # a dict as a parameter name.
+                self._history.append(f"{call.name} → REFUSED: {refusal}")
+                self.recorder.event("bad_call", step=step, tool=call.name, error=refusal)
+                continue
 
             if call.name in TERMINAL_TOOLS:
                 self._finalise(call, result)
