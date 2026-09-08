@@ -58,6 +58,29 @@ def test_an_empty_allowlist_permits_nothing():
         Allowlist().check_navigation("http://127.0.0.1:8080/")
 
 
+def test_an_empty_action_list_permits_nothing():
+    """Both "permit nothing" and "key absent" used to mean all nine actions.
+
+    An empty list is falsy, so the one list an operator is most likely to leave
+    out was the one that granted the most — against policy.toml's own promise
+    that anything absent from it is refused at the point of action.
+    """
+    for empty in ({"domains": ["*"], "actions": []}, {"domains": ["*"]}):
+        listed = Allowlist.from_dict(empty)
+        with pytest.raises(PolicyRefused, match="not permitted"):
+            listed.check_action(Action.CLICK)
+
+
+def test_an_action_is_refused_when_no_domain_is_allowlisted():
+    """permits_nothing was consulted by navigation only.
+
+    So a config that allowlisted no domain at all still permitted clicking and
+    typing on whatever page happened to already be open.
+    """
+    with pytest.raises(PolicyRefused, match="no domains are allowlisted"):
+        Allowlist(actions=frozenset(Action)).check_action(Action.CLICK)
+
+
 def test_an_unpermitted_action_type_is_refused():
     reads_only = Allowlist(domains=("*",), actions=frozenset({Action.READ, Action.NAVIGATE}))
     reads_only.check_action(Action.READ)

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import fnmatch
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -42,13 +42,16 @@ class PolicyRefused(PermissionError):
 class Allowlist:
     """Where the automation may go and what it may do there."""
 
+    #: Every field defaults to empty, and empty means "nothing is permitted".
+    #: The failure mode of a missing config should be a refusal, not free rein,
+    #: and that has to hold for each field separately. An absent ``actions``
+    #: key quietly meaning "all nine" made the list an operator is most likely
+    #: to leave out the list that granted the most.
     domains: tuple[str, ...] = ()
-    routes: tuple[str, ...] = ("*",)
-    actions: frozenset[Action] = field(default_factory=lambda: frozenset(Action))
+    routes: tuple[str, ...] = ()
+    actions: frozenset[Action] = frozenset()
     denied_routes: tuple[str, ...] = ()
 
-    #: An empty domain list means "nothing is permitted", never "everything".
-    #: The failure mode of a missing config should be a refusal, not free rein.
     @property
     def permits_nothing(self) -> bool:
         return not self.domains
@@ -76,6 +79,12 @@ class Allowlist:
             raise PolicyRefused(f"navigation to {url}", f"route {path!r} is not in the allowlist")
 
     def check_action(self, action: Action) -> None:
+        # Consulted here as well as in check_navigation. Without it, a config
+        # with no domains still permitted clicking and typing on whatever page
+        # happened to be open — the navigation that opened it being the only
+        # thing that was ever refused.
+        if self.permits_nothing:
+            raise PolicyRefused(f"action {action.value!r}", "no domains are allowlisted")
         if action not in self.actions:
             raise PolicyRefused(f"action {action.value!r}", "this action type is not permitted")
 
@@ -83,8 +92,12 @@ class Allowlist:
 
     @classmethod
     def permissive(cls, *domains: str) -> Allowlist:
-        """For tests and local development. Never a default."""
-        return cls(domains=tuple(domains) or ("*",))
+        """For tests and local development. Never a default.
+
+        Spelled out rather than leaning on the field defaults, because those
+        now refuse everything — which is the point of them.
+        """
+        return cls(domains=tuple(domains) or ("*",), routes=("*",), actions=frozenset(Action))
 
     @classmethod
     def from_file(cls, path: Path | str = DEFAULT_POLICY_FILE) -> Allowlist:
@@ -93,11 +106,10 @@ class Allowlist:
 
     @classmethod
     def from_dict(cls, raw: dict) -> Allowlist:
-        actions = raw.get("actions")
         return cls(
             domains=tuple(raw.get("domains", ())),
-            routes=tuple(raw.get("routes", ("*",))),
-            actions=(frozenset(Action(a) for a in actions) if actions else frozenset(Action)),
+            routes=tuple(raw.get("routes", ())),
+            actions=frozenset(Action(a) for a in raw.get("actions", ())),
             denied_routes=tuple(raw.get("denied_routes", ())),
         )
 
