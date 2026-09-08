@@ -393,7 +393,9 @@ class ReplayExecutor:
         result.outputs = self._extract_outputs()
         result.status = ReplayStatus.SUCCESS
 
-    def _after_step(self, result: ReplayResult, step: Step, report: StepReport) -> bool:
+    def _after_step(
+        self, result: ReplayResult, step: Step, report: StepReport, *, escalate: bool = True
+    ) -> bool:
         """Read what the step left on screen. Returns whether the loop goes on.
 
         Every way a step can end up done routes through here, including the one
@@ -416,6 +418,14 @@ class ReplayExecutor:
         automation is, the rules are declared per step rather than per actor,
         and one that stopped applying because a human had been involved would
         be a rule nobody could reason about.
+
+        A checkpoint that will not come true reaches a person, exactly as a
+        failed action does. It used to be the one failure the engine wrote down
+        and told nobody about, which also meant an expired session or a 500
+        *noticed while verifying* was handled differently from the identical
+        condition noticed while acting. If someone resumes, we look again rather
+        than take their word for it — once, because a second refusal from the
+        same screen is an answer, not a queue to keep re-raising.
         """
         outcome = self._detect_outcome(step)
         if outcome is not None:
@@ -426,13 +436,17 @@ class ReplayExecutor:
 
         if step.checkpoint is not None and not self._verify(step.checkpoint, step, report):
             observed = self._observed()
-            result.failure = Failure(
+            failure = Failure(
                 step_id=step.id,
                 failure_class=(self._classify_screen(observed) or FailureClass.CHECKPOINT_UNMET),
                 expected=f"checkpoint {_describe(self._resolved(step.checkpoint))}",
                 observed=observed,
                 evidence=self._capture(step.id),
             )
+            if escalate and self._escalate(result, failure, step):
+                self._settle_after_handoff(step)
+                return self._after_step(result, step, report, escalate=False)
+            result.failure = failure
             return False
 
         return True

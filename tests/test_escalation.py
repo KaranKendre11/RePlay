@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from replay.artifact import ArtifactStore
+from replay.artifact.conditions import TextPresent
 from replay.artifact.schema import ApprovalState
 from replay.engine import Failure, FailureClass, ReplayExecutor, ReplayStatus
 from replay.escalation import (
@@ -301,6 +302,43 @@ def test_an_operator_who_resumes_without_doing_the_work_does_not_get_a_pass(
     assert result.failure.failure_class is FailureClass.CHECKPOINT_UNMET
     assert result.failure.step_id == "s7"
     assert not result.outputs
+
+
+def test_a_checkpoint_that_will_not_come_true_reaches_a_person(meridian_server, tmp_path):
+    """The one failure the engine used to write down and tell nobody about.
+
+    `_escalate` had two call sites — a refused step and a failed action — and a
+    missed checkpoint was neither, so `CHECKPOINT_UNMET` was unreachable in the
+    replay engine however loudly the taxonomy declared it. Worse, the same
+    branch classifies the screen, so an expired session or a 500 noticed *while
+    verifying* was handled differently from the identical condition noticed
+    while acting.
+    """
+    artifact = ArtifactStore("artifacts").load("lookup_balance")
+    broken = artifact.model_copy(deep=True)
+    broken.steps[2] = broken.steps[2].model_copy(
+        update={"checkpoint": TextPresent(text="THIS NEVER APPEARS", frame_path=["workframe"])}
+    )
+
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-checkpoint", root=tmp_path) as recorder,
+    ):
+        operator = ScriptedOperator()  # resumes, having touched nothing
+        result = ReplayExecutor(
+            surface,
+            broken,
+            recorder=recorder,
+            base_url=meridian_server,
+            step_timeout_ms=1_000,
+            escalation=operator,
+        ).run({"member_id": "12345"})
+
+    assert operator.seen, "nobody was asked about a checkpoint that could not come true"
+    assert operator.seen[0].reason is InterventionReason.CHECKPOINT_UNMET
+    assert len(operator.seen) == 1, "asked once; a second refusal is an answer"
+    assert result.status is ReplayStatus.FAILED
+    assert result.failure.failure_class is FailureClass.CHECKPOINT_UNMET
 
 
 def test_a_business_outcome_the_operator_ran_into_reaches_the_caller(
