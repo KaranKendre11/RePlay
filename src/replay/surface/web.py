@@ -359,21 +359,24 @@ class WebSurface:
         accessibility snapshot means waiting out the full locator timeout every
         single time — which turned a four-step replay into a 26-second one
         before this check existed. ``count()`` does not wait.
+
+        Failures are not answered here. "This frame has no body" and "this frame
+        cannot be asked" are different facts, and :meth:`text_of` is required to
+        tell them apart.
         """
-        try:
-            return frame.locator("body").count() > 0
-        except (PlaywrightError, PlaywrightTimeout):
-            return False
+        return frame.locator("body").count() > 0
 
     def _aria(self, frame: Frame) -> str:
         """Accessibility snapshot of one frame.
 
         A frameset document legitimately yields nothing; its children carry the
-        content.
+        content. Nothing here is load-bearing enough to raise over: a frame that
+        cannot be snapshotted is simply left out of the observation, and its
+        absence from ``frames`` is itself visible.
         """
-        if not self._has_body(frame):
-            return ""
         try:
+            if not self._has_body(frame):
+                return ""
             return frame.locator("body").aria_snapshot(timeout=2_000)
         except (PlaywrightError, PlaywrightTimeout):
             return ""
@@ -385,13 +388,26 @@ class WebSurface:
             return ""
 
     def text_of(self, path: list[str] | None = None) -> str:
+        """The visible text of one frame. Empty only when there is none.
+
+        Every failure used to come back as ``""`` — a missing frame, a dead
+        browser, a locator timeout — and ``TextAbsent`` reads ``text not in ""``
+        as ``True``. So a closed surface reported a live-looking URL and
+        satisfied every "error text is absent" assertion in the taxonomy, which
+        is precisely the misdiagnosis :class:`~replay.surface.base.Surface`
+        says this method exists to prevent.
+
+        A surface that cannot look now says so, and
+        :meth:`evaluate` turns that into a checkpoint that fails.
+        """
+        frame = self.frame_for(path)  # FrameNotFound is already a SurfaceError.
         try:
-            frame = self.frame_for(path)
             if not self._has_body(frame):
                 return ""
             return frame.locator("body").inner_text(timeout=2_000)
-        except (PlaywrightError, PlaywrightTimeout, FrameNotFound):
-            return ""
+        except (PlaywrightError, PlaywrightTimeout) as exc:
+            label = "/".join(path) if path else "(main)"
+            raise SurfaceError(f"cannot read frame {label}: {type(exc).__name__}") from exc
 
     def inventory(self) -> list[Candidate]:
         """Enumerate what is on screen, each with a durable locator ladder.
@@ -769,10 +785,10 @@ class WebSurface:
         """
         match condition:
             case TextPresent():
-                return condition.text in self._scan_text(condition.frame_path)
+                return self._text_matches(condition.frame_path, condition.text, present=True)
 
             case TextAbsent():
-                return condition.text not in self._scan_text(condition.frame_path)
+                return self._text_matches(condition.frame_path, condition.text, present=False)
 
             case RoleNameVisible():
                 for path in self._frame_paths():
@@ -810,6 +826,19 @@ class WebSurface:
                 return not self.evaluate(condition.condition)
 
         raise SurfaceError(f"unsupported condition {condition!r}")
+
+    def _text_matches(self, path: list[str] | None, text: str, *, present: bool) -> bool:
+        """Is this text on screen? ``False`` when the surface cannot tell.
+
+        Both polarities answer ``False``, which is the whole point: "the error
+        banner is absent" must not be satisfied by a surface that could not
+        look for it. A checkpoint nobody can evaluate fails.
+        """
+        try:
+            found = text in self._scan_text(path)
+        except SurfaceError:
+            return False
+        return found is present
 
     def _scan_text(self, path: list[str] | None) -> str:
         if path is not None:

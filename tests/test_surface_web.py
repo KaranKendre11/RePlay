@@ -37,7 +37,7 @@ from replay.surface import (
     TargetNotFound,
     WebSurface,
 )
-from replay.surface.base import Surface
+from replay.surface.base import Surface, SurfaceError
 from replay.surface.web import xpath_literal
 
 WORK = ["workframe"]
@@ -333,6 +333,24 @@ def test_http_status_distinguishes_a_server_error_from_a_blank_page(surface, mer
     surface.act(Action.NAVIGATE, value=f"{meridian_server}/member?f7=12345&inject=error500")
     assert surface.evaluate(HttpStatusIs(status=500))
     assert not surface.evaluate(HttpStatusIs(status=200))
+
+
+def test_a_surface_that_cannot_look_fails_a_checkpoint_rather_than_passing_it(surface):
+    """Regression: "nothing readable" and "cannot look" were the same answer.
+
+    ``text_of`` returned ``""`` for a dead browser exactly as it does for a
+    blank screen, and ``TextAbsent`` reads ``text not in ""`` as ``True``. A
+    closed surface therefore satisfied every "error text is absent" assertion
+    in the taxonomy — the misdiagnosis the protocol says text_of exists to
+    prevent, arriving as a clean pass.
+    """
+    surface.close()
+
+    with pytest.raises(SurfaceError):
+        surface.text_of(WORK)
+    assert not surface.evaluate(TextAbsent(text="APPLICATION ERROR"))
+    assert not surface.evaluate(TextAbsent(text="SESSION EXPIRED"))
+    assert not surface.evaluate(TextPresent(text="MEMBER INQUIRY"))
 
 
 # ---------- the protocol ----------
