@@ -298,6 +298,34 @@ def test_a_malformed_call_is_fed_back_rather_than_acted_on(
     assert any(e["kind"] == "bad_call" for e in events), "and the model was told what was wrong"
 
 
+def test_a_parameter_from_a_failed_action_is_not_in_the_contract(
+    surface, recorder, meridian_server
+):
+    """A declaration is only worth as much as the action that carried it.
+
+    Synthesis prunes the failed step, so recording its parameter anyway ships a
+    contract whose argument nothing consumes — `lookup_balance(member_id=...)`
+    running against whatever the screen already held.
+    """
+    surface.act(Action.NAVIGATE, value=meridian_server)
+    cell = next(c for c in surface.inventory() if c.group == "value").index
+
+    llm = MockLLM(
+        [
+            ToolCall(
+                name="type_text",
+                arguments={"index": cell, "text": "12345", "parameter_name": "member_id"},
+            ),
+            ToolCall(name="finish", arguments={"summary": "Done.", "checkpoint_text": "Member ID"}),
+        ]
+    )
+    result = DiscoveryLoop(surface, llm, recorder, vision=False).run("goal", meridian_server)
+
+    typed = next(a for a in result.actions if a.action is Action.TYPE)
+    assert not typed.ok, "typing into a table cell does not work"
+    assert result.parameters == {}
+
+
 def test_repeating_the_same_decision_stops_the_run(surface, recorder, meridian_server):
     surface.act(Action.NAVIGATE, value=meridian_server)
     repeat = ToolCall(name="click", arguments={"index": 0})

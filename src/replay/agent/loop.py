@@ -503,9 +503,14 @@ class DiscoveryLoop:
             error=outcome.error,
         )
 
-        if parameter and value:
+        # A declaration only joins the capability's contract if the action
+        # carrying it actually worked. Synthesis drops failed actions, so a
+        # parameter taken from one becomes a required input that no step
+        # consumes: the caller's argument is accepted, silently discarded, and
+        # the flow runs against whatever the screen already held.
+        if outcome.ok and parameter and value:
             result.parameters[parameter] = value
-        if output and outcome.read_value is not None:
+        if outcome.ok and output and outcome.read_value is not None:
             result.outputs[output] = outcome.read_value
 
         summary = f"{call.name} [{candidate.index}] {candidate.describe!r}"
