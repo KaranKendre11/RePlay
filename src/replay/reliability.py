@@ -32,9 +32,13 @@ counter file:
   cannot be right unless the five runs are on disk to be read.
 * Deleting evidence lowers the tally, which is correct. No evidence, no
   approval.
-* Reliability is per *version*, keyed on the exact ``name@version`` ref, so a
-  new version starts at zero — which is what the immutability rule already
-  implies and a mutable counter would have quietly broken.
+* Reliability is per *version and deployment*, keyed on the exact
+  ``name@version#tenant`` ref, so a new version starts at zero — which is what
+  the immutability rule already implies and a mutable counter would have
+  quietly broken. The tenant belongs in the key because an override changes the
+  host, the mount point, the selectors and the checkpoints: five clean
+  ``--tenant northgate`` replays are not evidence about the base capability,
+  and a base capability's approval is not evidence about Northgate.
 
 The one thing that *is* written back is the approval itself, because that is a
 decision rather than an observation, and decisions belong in the diff. See

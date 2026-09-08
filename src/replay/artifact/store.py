@@ -109,6 +109,12 @@ class ArtifactStore:
         version is immutable — a caller that pinned ``lookup_balance@1.0.0`` must
         keep getting the same behaviour. Change means a new version.
         """
+        if artifact.tenant:
+            raise ValueError(
+                f"{artifact.ref} is a tenant specialisation, not a publishable "
+                "capability; it would be written over the base recording it was "
+                "derived from. Save the base, and the deltas as an override."
+            )
         path = self.path_for(artifact.name, artifact.version)
         if path.exists() and not overwrite:
             raise FileExistsError(

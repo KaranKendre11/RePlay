@@ -29,10 +29,11 @@ from replay.artifact.locators import (
     RoleNameLocator,
     SelectorLocator,
 )
-from replay.artifact.schema import ParamSpec, TargetSpec
+from replay.artifact.schema import ApprovalState, ParamSpec, TargetSpec
 from replay.engine import ReplayExecutor, ReplayStatus, rebase
 from replay.evidence import EvidenceRecorder
 from replay.policy import Allowlist
+from replay.reliability import WINDOW, promotion_blockers, tally
 from replay.surface import WebSurface
 
 PERMISSIVE = Allowlist.permissive("127.0.0.1:*", "localhost:*")
@@ -168,6 +169,43 @@ def test_a_tenant_with_no_override_runs_the_base_capability(base):
     """
     assert specialise(base, "a-tenant-with-no-file", root="overrides") == base
     assert specialise(base, None) == base
+
+
+# ---------- evidence belongs to the deployment it was gathered on ----------
+
+
+def test_a_tenant_replay_is_not_evidence_about_the_base_capability(base, northgate, tmp_path):
+    """A different host, mount point, selectors and checkpoint is a different thing.
+
+    Five clean ``--tenant northgate`` replays used to satisfy every promotion
+    rule for the base ``lookup_balance``, which had never been run against that
+    deployment — so ``replay approve`` would stamp APPROVED on evidence
+    gathered somewhere else entirely.
+    """
+    from test_reliability import clean_history  # noqa: PLC0415
+
+    specialised = apply_override(base, northgate)
+    assert specialised.ref == f"{base.ref}#northgate"
+
+    clean_history(specialised.ref, tmp_path)
+
+    assert tally(tmp_path, specialised.ref).replays == WINDOW
+    assert tally(tmp_path, base.ref).replays == 0
+    assert promotion_blockers(tally(tmp_path, base.ref), base), "the base has no track record"
+
+
+def test_the_base_capabilitys_approval_does_not_carry_over_to_a_tenant(base, northgate):
+    """And the reverse: approved against the base is not approved against Northgate."""
+    approved = base.model_copy(
+        update={"reliability": base.reliability.model_copy(update={"approval": "approved"})}
+    )
+    assert apply_override(approved, northgate).reliability.approval is ApprovalState.DRAFT
+
+
+def test_a_specialised_artifact_may_not_be_published(base, northgate, tmp_path):
+    """It would be written over the base recording it was derived from."""
+    with pytest.raises(ValueError, match="tenant specialisation"):
+        ArtifactStore(tmp_path).save(apply_override(base, northgate))
 
 
 # ---------- drift ----------

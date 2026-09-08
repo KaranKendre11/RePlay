@@ -36,7 +36,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from replay.artifact.conditions import Condition
-from replay.artifact.schema import CapabilityArtifact, TargetSpec
+from replay.artifact.schema import CapabilityArtifact, Reliability, TargetSpec
 
 DEFAULT_ROOT = Path("overrides")
 
@@ -67,7 +67,7 @@ class VariantOverride(BaseModel):
 
     @property
     def ref(self) -> str:
-        return f"{self.base}@{self.tenant}"
+        return f"{self.base}#{self.tenant}"
 
     @property
     def touched_steps(self) -> set[str]:
@@ -95,6 +95,13 @@ def apply_override(artifact: CapabilityArtifact, override: VariantOverride) -> C
         )
 
     specialised = artifact.model_copy(deep=True)
+
+    # Identity first, because everything downstream keys on the ref. A run
+    # against this deployment must not be counted as, or trusted on, evidence
+    # from the base one — and the base's approval cited replays of a different
+    # host, mount point, selectors and checkpoints, so it does not carry over.
+    specialised.tenant = override.tenant
+    specialised.reliability = Reliability()
 
     if override.entry_url_pattern:
         specialised.app.entry_url_pattern = override.entry_url_pattern

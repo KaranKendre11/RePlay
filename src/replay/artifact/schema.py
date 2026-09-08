@@ -40,8 +40,15 @@ IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 OUTCOME_CODE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
+#: Institution slugs are chosen by whoever onboards a tenant, and the name is
+#: interpolated into a filesystem path and into a capability's identity. Hyphens
+#: are allowed because real slugs use them; ``.`` and ``/`` are not, because
+#: ``overrides/../../x`` traverses and ``overrides//tmp/x`` is absolute.
+TENANT = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
 Identifier = Annotated[str, Field(pattern=IDENTIFIER.pattern, max_length=64)]
 SemVer = Annotated[str, Field(pattern=SEMVER.pattern)]
+Tenant = Annotated[str, Field(pattern=TENANT.pattern, max_length=64)]
 
 
 class Model(BaseModel):
@@ -435,6 +442,15 @@ class CapabilityArtifact(Model):
     schema_version: Literal["1.0"] = SCHEMA_VERSION
     name: Identifier
     version: SemVer
+    tenant: Tenant | None = Field(
+        default=None,
+        description=(
+            "The deployment this copy was specialised for, set by "
+            ":func:`replay.artifact.overrides.apply_override`. Never present on a "
+            "published artifact: the file on disk is the base recording, and the "
+            "store refuses to save a specialisation over it."
+        ),
+    )
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     app: AppRef
@@ -450,7 +466,16 @@ class CapabilityArtifact(Model):
 
     @property
     def ref(self) -> str:
-        return f"{self.name}@{self.version}"
+        """This capability's identity, as everything downstream keys on it.
+
+        The tenant is part of it. An override changes the host, the mount point,
+        the selectors and the checkpoints, so a Northgate replay observes a
+        different deployment from a base replay — and keying reliability on
+        ``name@version`` alone meant five clean ``--tenant northgate`` runs
+        satisfied every promotion rule for the *base* capability, which had
+        never been run against that deployment at all. The reverse held too.
+        """
+        return f"{self.name}@{self.version}" + (f"#{self.tenant}" if self.tenant else "")
 
     @property
     def version_tuple(self) -> tuple[int, int, int]:
