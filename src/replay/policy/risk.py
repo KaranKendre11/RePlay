@@ -26,10 +26,12 @@ calling code, which is exactly the wrong place for it.
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass
+from pathlib import Path
 
 from replay.artifact.schema import ApprovalState, CapabilityArtifact, RiskClass, Step
-from replay.policy.allowlist import PolicyRefused
+from replay.policy.allowlist import DEFAULT_POLICY_FILE, PolicyRefused
 
 ORDER = [RiskClass.SAFE, RiskClass.RISKY, RiskClass.IRREVERSIBLE]
 
@@ -49,6 +51,38 @@ class RiskGate:
         if self.allow_irreversible:
             return RiskClass.IRREVERSIBLE
         return RiskClass.RISKY if self.allow_risky else RiskClass.SAFE
+
+    @classmethod
+    def from_file(cls, path: Path | str = DEFAULT_POLICY_FILE) -> RiskGate:
+        """The ceiling this deployment runs at, from the policy file.
+
+        On the command line the ceiling is a flag, and that is defensible: a
+        person is at the terminal and typing it is the act of taking
+        responsibility. Over HTTP it was a field in the request body, which
+        handed the same decision to whoever wrote the calling code — the exact
+        arrangement the module docstring above argues against. Authenticating
+        the field would only move the question to who may set it; the answer is
+        that nobody on the calling side may. So it lives beside the allowlist,
+        where it is one reviewable, diffable statement per deployment.
+        """
+        raw = tomllib.loads(Path(path).read_text())
+        return cls.from_dict(raw.get("risk", {}))
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> RiskGate:
+        """An absent or unreadable ceiling is ``safe``, never more."""
+        try:
+            ceiling = RiskClass(raw.get("ceiling", RiskClass.SAFE.value))
+        except ValueError:
+            named = raw.get("ceiling")
+            raise PolicyRefused(
+                f"risk ceiling {named!r}",
+                f"not one of {[c.value for c in ORDER]}",
+            ) from None
+        return cls(
+            allow_risky=at_least(ceiling, RiskClass.RISKY),
+            allow_irreversible=at_least(ceiling, RiskClass.IRREVERSIBLE),
+        )
 
     def check_capability(
         self, artifact: CapabilityArtifact, *, escalation_available: bool = False

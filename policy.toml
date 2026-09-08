@@ -25,3 +25,13 @@ actions = [
   "click", "type", "select", "navigate", "press", "read", "wait",
   "accept_dialog", "dismiss_dialog",
 ]
+
+# How much damage a run may do at all. `safe` reads; `risky` changes state;
+# `irreversible` moves money or notifies someone outside the institution.
+#
+# A ceiling, not a request field. On the command line `--allow-risky` is a
+# person at a terminal taking responsibility; over HTTP the same two booleans
+# were request body, which handed the decision to whoever wrote the calling
+# code. It belongs here, where raising it is one reviewable line in a diff.
+[risk]
+ceiling = "safe"
