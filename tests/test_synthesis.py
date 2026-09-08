@@ -7,6 +7,7 @@ disagree structurally, one of them is wrong, and finding out which is the point.
 """
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pytest
 
 from replay.agent.loop import DiscoveryResult, RecordedAction, StopReason
 from replay.artifact import ArtifactStore, CapabilityArtifact
+from replay.artifact.conditions import TextPresent, parameters_in
 from replay.artifact.locators import LabelAdjacentLocator, RoleNameLocator
 from replay.artifact.schema import Action, ApprovalState, ParamRef, RiskClass, TargetSpec
 from replay.synthesis import (
@@ -176,6 +178,39 @@ def test_a_volatile_checkpoint_is_replaced_and_the_reason_recorded():
     assert synthesis.artifact.provenance.notes == synthesis.notes
 
 
+def test_a_checkpoint_naming_a_parameter_is_kept_by_reference_not_thrown_away():
+    """The headline defect, at its source.
+
+    Parameters and outputs were both "volatile", so a checkpoint mentioning the
+    member id was rejected exactly like one mentioning the balance, and the
+    generic chrome that replaced it ("Open Sub-Account") is true on every
+    member's page. A parameter is supplied by the caller, so it can be asserted
+    by reference — and it is the only thing on that screen that says *whose* it
+    is.
+    """
+    synthesis = synthesize(
+        run(checkpoint_text="MEMBER 12345 DELORES A HARTWELL"), name="lookup_balance"
+    )
+    checkpoint = next(s.checkpoint for s in synthesis.artifact.steps if s.checkpoint)
+
+    assert parameters_in(checkpoint) == {"member_id"}
+    assert "Current Balance" in [
+        c.text for c in checkpoint.conditions if isinstance(c.text, str)
+    ], "still proves the flow arrived, as well as who it arrived for"
+    assert any("member_id" in note for note in synthesis.notes)
+
+
+def test_the_balance_is_still_refused_as_a_checkpoint():
+    """An output is unknown at replay time; a parameter is not. The two are
+    not interchangeable, and confusing them in either direction is a defect."""
+    synthesis = synthesize(
+        run(checkpoint_text="4,211.03", checkpoint_candidates=["Current Balance"]),
+        name="lookup_balance",
+    )
+    checkpoint = next(s.checkpoint for s in synthesis.artifact.steps if s.checkpoint)
+    assert checkpoint == TextPresent(text="Current Balance")
+
+
 def test_synthesis_refuses_when_no_stable_checkpoint_exists():
     """Better to fail loudly than to record an assertion that passes exactly once."""
     with pytest.raises(SynthesisError, match="no stable checkpoint"):
@@ -186,6 +221,35 @@ def test_the_checkpoint_hangs_off_the_last_step_that_changed_screen():
     artifact = synthesize(run(), name="lookup_balance").artifact
     checked = [s.id for s in artifact.steps if s.checkpoint is not None]
     assert checked == ["s3"], "the click that navigated, not the read that followed"
+
+
+def test_the_checkpoint_does_not_attach_to_the_opening_navigate():
+    """On a frameset app clicks routinely report `navigated=False`, and the
+    opening navigate was then the only "navigating" step — so the checkpoint
+    and every recovery rule attached to the entry-URL load, which asserts the
+    application is up and nothing else.
+    """
+    actions = [
+        RecordedAction(step_id="s1", intent="Open.", action=Action.NAVIGATE, value="http://x/"),
+        RecordedAction(
+            step_id="s2",
+            intent="Search.",
+            action=Action.CLICK,
+            target=target("Search", RoleNameLocator(role="button", name="Search")),
+            navigated=True,
+        ),
+        RecordedAction(
+            step_id="s3",
+            intent="Read the balance.",
+            action=Action.READ,
+            target=target("SAVINGS value", RoleNameLocator(role="cell", name="x")),
+            output_name="savings_balance",
+            read_value="4,211.03",
+        ),
+    ]
+    artifact = synthesize(run(actions=actions), name="lookup_balance").artifact
+
+    assert [s.id for s in artifact.steps if s.checkpoint is not None] == ["s2"]
 
 
 # ---------- contract ----------
@@ -243,6 +307,34 @@ def test_a_click_that_answers_a_confirmation_is_irreversible():
     assert classify_risk(action) is RiskClass.IRREVERSIBLE
 
 
+def test_a_click_that_commits_without_asking_is_risky():
+    """REPORT §6, verbatim: "an application that commits without asking would
+    be classified `risky`."
+
+    It was not. The RISKY branch required `action.parameter_name`, and the
+    `click` tool the model is given has no such property, so no click a model
+    can emit ever reached it: every submit on an application that does not
+    confirm came out `safe`, `requires_approval=False`, and unattended.
+    """
+    action = RecordedAction(
+        step_id="s7",
+        intent="Submit the transfer.",
+        action=Action.CLICK,
+        target=target("Submit", RoleNameLocator(role="button", name="Submit")),
+        expect_navigation=True,
+    )
+    assert classify_risk(action) is RiskClass.RISKY
+
+    search = RecordedAction(
+        step_id="s3",
+        intent="Search.",
+        action=Action.CLICK,
+        target=target("Search", RoleNameLocator(role="button", name="Search")),
+        expect_navigation=True,
+    )
+    assert classify_risk(search) is RiskClass.SAFE, "a lookup is still a lookup"
+
+
 def test_typing_alone_commits_nothing():
     action = RecordedAction(
         step_id="s2",
@@ -284,6 +376,24 @@ def test_a_run_with_no_successful_actions_is_refused():
     ]
     with pytest.raises(SynthesisError, match="no successful actions"):
         synthesize(run(actions=failed), name="x")
+
+
+def test_two_fields_that_slug_to_one_name_are_refused():
+    """`slug` is lossy and nothing downstream notices.
+
+    Two inputs binding to one parameter means the second field is filled with
+    the first one's value; two outputs collide in the executor's
+    `_extract_outputs`, where the last read wins and a declared output silently
+    disappears.
+    """
+    with pytest.raises(SynthesisError, match="reduce to the same name"):
+        synthesize(run(parameters={"Member ID": "12345", "member-id": "67890"}), name="x")
+
+    reads = run().actions
+    reads[3] = replace(reads[3], output_name="savings balance")
+    colliding = [*reads, replace(reads[3], step_id="s5", output_name="savings_balance")]
+    with pytest.raises(SynthesisError, match="reduce to the same name"):
+        synthesize(run(actions=colliding), name="x")
 
 
 @pytest.mark.parametrize(
@@ -369,6 +479,43 @@ def test_a_click_that_achieved_nothing_is_dropped():
     kept = prune_ineffective(actions)
     assert [a.step_id for a in kept] == ["s1", "s2"], "renumbered contiguously"
     assert kept[1].accept_dialog, "the surviving click is the one that worked"
+
+
+def test_two_controls_sharing_a_name_are_not_the_same_control():
+    """`prune_ineffective` matched on the description string alone.
+
+    A nav frame and a work frame both carrying a "Submit" is the norm, not the
+    exception, so a click that had loaded the results and merely reported
+    `navigated=False` was deleted because something later happened to share its
+    name — the artifact then typed the member id and never sent it.
+    """
+    work = target("Submit", RoleNameLocator(role="button", name="Submit"))
+    navigation = TargetSpec(
+        description="Submit",
+        rationale=RATIONALE,
+        frame_path=["navframe"],
+        strategies=[RoleNameLocator(role="link", name="Submit")],
+    )
+    actions = [
+        RecordedAction(
+            step_id="s1",
+            intent="Send the form.",
+            action=Action.CLICK,
+            target=work,
+            expect_navigation=True,
+            navigated=False,
+        ),
+        RecordedAction(
+            step_id="s2",
+            intent="Open the submissions queue.",
+            action=Action.CLICK,
+            target=navigation,
+            expect_navigation=True,
+            navigated=True,
+        ),
+    ]
+
+    assert [a.intent for a in prune_ineffective(actions)] == [a.intent for a in actions]
 
 
 def test_a_click_that_navigated_is_never_dropped():

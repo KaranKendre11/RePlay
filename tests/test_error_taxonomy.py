@@ -15,6 +15,7 @@ than asserted.
 import pytest
 
 from replay.artifact import ArtifactStore
+from replay.artifact.locators import RoleNameLocator, SelectorLocator
 from replay.artifact.schema import ApprovalState, CapabilityArtifact
 from replay.engine import FailureClass, ReplayExecutor, ReplayStatus
 from replay.evidence import EvidenceRecorder
@@ -164,6 +165,38 @@ def test_transient_slowness_is_absorbed_by_the_declared_waits(meridian_server, t
     assert result.duration_ms > 3_000, "the injected delay was actually waited out"
 
 
+def test_a_recovery_that_did_not_work_is_not_recorded_as_one(meridian_server, tmp_path):
+    """ "Recovered silently" and "never happened" must not look the same — and
+    neither must "recovered" and "tried to recover and failed".
+
+    `_apply` ignored the outcome it got back, so a recovery click that could
+    not resolve its control still appended to `recovered`, wrote a `recovered`
+    event, and reported the rule as applied. The interstitial is still on
+    screen; the evidence said it had been cleared.
+    """
+    artifact = ArtifactStore("artifacts").load("lookup_balance")
+    broken = artifact.model_copy(deep=True)
+    rule = broken.steps[2].on_error[0]
+    broken.steps[2].on_error[0] = rule.model_copy(
+        update={
+            "target": rule.target.model_copy(
+                update={"strategies": [RoleNameLocator(role="link", name="No Such Link")]}
+            )
+        }
+    )
+
+    result = replay(
+        meridian_server,
+        tmp_path,
+        Injection.DIALOG,
+        "recover-broken-rule",
+        capability=(broken, {"member_id": "12345"}),
+    )
+
+    assert result.status is ReplayStatus.FAILED, "the interstitial was never cleared"
+    assert all(not step.recovered for step in result.steps)
+
+
 def test_recovery_is_bounded(meridian_server, tmp_path):
     """An unbounded retry turns a hard failure into a hang."""
     artifact = ArtifactStore("artifacts").load("lookup_balance")
@@ -258,6 +291,42 @@ def test_the_engine_reads_those_markers_from_the_artifact_not_from_itself(
     )
 
 
+def test_a_control_whose_name_contains_refused_is_still_locator_drift(meridian_server, tmp_path):
+    """The taxonomy was decided by searching the error text for "refused".
+
+    `TargetNotFound` interpolates the artifact's own `target.description`, so a
+    control named after the refused-items queue — an ordinary thing to find in
+    a back office — turned a vanished locator into a policy refusal. That pages
+    an operator asking "should this happen at all" about a step that was never
+    blocked, and skips screen classification, so a 500 or a session timeout on
+    the same step is mislabelled with it.
+    """
+    artifact = ArtifactStore("artifacts").load("lookup_balance")
+    drifted = artifact.model_copy(deep=True)
+    original = drifted.steps[1]
+    drifted.steps[1] = original.model_copy(
+        update={
+            "target": original.target.model_copy(
+                update={
+                    "description": "refused-items queue link",
+                    "strategies": [SelectorLocator(engine="css", expression="input[name='gone']")],
+                }
+            )
+        }
+    )
+
+    result = replay(
+        meridian_server,
+        tmp_path,
+        None,
+        "drift-refused-name",
+        capability=(drifted, {"member_id": "12345"}),
+    )
+
+    assert result.status is ReplayStatus.FAILED
+    assert result.failure.failure_class is FailureClass.TARGET_NOT_FOUND
+
+
 @pytest.mark.parametrize("injection", [Injection.TIMEOUT, Injection.ERROR500])
 def test_a_hard_failure_is_debuggable_without_re_running(injection, meridian_server, tmp_path):
     result = replay(meridian_server, tmp_path, injection, f"debug-{injection.value}")
@@ -284,6 +353,28 @@ def test_the_read_capability_is_marked_safe():
     artifact = ArtifactStore("artifacts").load("lookup_balance")
     assert artifact.policy.max_risk.value == "safe"
     assert not artifact.policy.requires_approval
+
+
+def test_a_dialog_the_replay_answered_leaves_a_trace(meridian_server, tmp_path):
+    """The submit on this application is a native `confirm()`.
+
+    `_perform` read `resolution`, `ok`, `error` and `read_value` from the
+    action outcome and nothing else, and `StepReport` had nowhere to put a
+    dialog anyway — so on a *successful* replay the confirmation the automation
+    accepted appeared in no step report, no `run.jsonl` and no `result.json`.
+    """
+    result = replay(
+        meridian_server,
+        tmp_path,
+        None,
+        "write-dialog-trace",
+        capability=CAPABILITY_FOR[Injection.VALIDATION],
+    )
+
+    assert result.status is ReplayStatus.SUCCESS
+    submit = next(s for s in result.steps if s.step_id == "s7")
+    assert submit.dialogs, "the confirmation the automation answered"
+    assert any("dialogs" in s.to_dict() for s in result.steps)
 
 
 def test_the_write_capability_replays_end_to_end(meridian_server, tmp_path):

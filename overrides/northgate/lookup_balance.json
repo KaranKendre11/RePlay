@@ -74,10 +74,24 @@
   },
   "checkpoints": {
     "s3": {
-      "kind": "text_present",
-      "text": "New Sub-Account",
-      "frame_path": [
-        "workframe"
+      "kind": "all_of",
+      "conditions": [
+        {
+          "kind": "text_present",
+          "text": {
+            "param": "member_id"
+          },
+          "frame_path": [
+            "workframe"
+          ]
+        },
+        {
+          "kind": "text_present",
+          "text": "New Sub-Account",
+          "frame_path": [
+            "workframe"
+          ]
+        }
       ]
     }
   },

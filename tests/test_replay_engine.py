@@ -13,14 +13,18 @@ The three that carry the most weight:
 import json
 
 import pytest
+from test_surface_protocol import MarkupSurface, MinimalSurface
 
 from replay.artifact import ArtifactStore
 from replay.artifact.conditions import TextPresent
+from replay.artifact.schema import ParamRef, ParamSpec
 from replay.engine import (
     FailureClass,
     InvalidArguments,
     ReplayExecutor,
+    ReplayResult,
     ReplayStatus,
+    StepReport,
     bind_parameters,
     rebase,
 )
@@ -90,6 +94,120 @@ def test_no_model_is_ever_constructed_during_a_replay(executor, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     assert executor.run({"member_id": "12345"}).status is ReplayStatus.SUCCESS
+
+
+def test_one_members_balance_is_never_returned_for_another(artifact, tmp_path):
+    """The worst thing this system could do, pinned.
+
+    The screen here is stuck on member 12345 — which is what any failure that
+    leaves the wrong page in ``workframe`` looks like. Every check the artifact
+    made before this fix was true of that screen no matter who was asked about:
+    "Open Sub-Account" is a link on every member's page, and the balance is read
+    from whatever SAVINGS row happens to be in the frame. So a lookup for 22222
+    came back ``success`` carrying 12345's money.
+
+    Nothing about the second run may resemble the first except the failure.
+    """
+    screen = "MEMBER 12345  DELORES A HARTWELL\nSAVINGS  4,211.03\nOpen Sub-Account"
+
+    def lookup(member_id: str, run_id: str):
+        with EvidenceRecorder(run_id, root=tmp_path) as recorder:
+            surface = MinimalSurface(screen, read="4,211.03")
+            return ReplayExecutor(surface, artifact, recorder=recorder).run(
+                {"member_id": member_id}
+            )
+
+    theirs = lookup("12345", "balance-right-member")
+    assert theirs.status is ReplayStatus.SUCCESS, "the member actually on screen"
+    assert theirs.outputs == {"current_savings_balance": "4,211.03"}
+
+    someone_else = lookup("22222", "balance-wrong-member")
+    assert someone_else.status is ReplayStatus.FAILED
+    assert someone_else.failure.failure_class is FailureClass.CHECKPOINT_UNMET
+    assert someone_else.outputs == {}, "no balance at all is the only safe answer"
+
+
+def test_a_declared_output_that_never_appeared_is_not_a_success(artifact, tmp_path):
+    """`success` means "use `outputs`", so every declared key has to be in it.
+
+    The read step here resolves and runs and simply produces no value — an
+    empty cell, a column that moved. Nothing checked that what the contract
+    promised was actually extracted, so the caller got `success` and a dict
+    missing the only key it asked for.
+    """
+    screen = "MEMBER 12345  DELORES A HARTWELL\nOpen Sub-Account"
+
+    with EvidenceRecorder("output-missing", root=tmp_path) as recorder:
+        result = ReplayExecutor(MinimalSurface(screen, read=None), artifact, recorder=recorder).run(
+            {"member_id": "12345"}
+        )
+
+    assert result.status is ReplayStatus.FAILED
+    assert "current_savings_balance" in result.failure.expected
+    assert result.failure.step_id == "s4"
+
+
+def test_a_reused_executor_never_carries_a_previous_runs_output(artifact, tmp_path):
+    """`run` twice, and the second answer was partly the first one.
+
+    `_reads` was initialised in `__init__` and never cleared, so a read step
+    that produced no value inherited whatever the last invocation had left
+    there — member 22222's result carrying member 11111's balance, reported as
+    a success. Reuse is the supported way to measure determinism, so the state
+    resets rather than the reuse being refused.
+    """
+
+    class Screens(MinimalSurface):
+        def show(self, screen: str, read: str | None) -> None:
+            self._screen, self._read = screen, read
+
+    surface = Screens("MEMBER 11111\nOpen Sub-Account", read="1,000.00")
+
+    with EvidenceRecorder("reused-executor", root=tmp_path) as recorder:
+        executor = ReplayExecutor(surface, artifact, recorder=recorder)
+        first = executor.run({"member_id": "11111"})
+        surface.show("MEMBER 22222\nOpen Sub-Account", read=None)
+        second = executor.run({"member_id": "22222"})
+
+    assert first.outputs == {"current_savings_balance": "1,000.00"}
+    assert second.outputs == {}, "11111's balance must not be 22222's answer"
+    assert second.status is ReplayStatus.FAILED
+
+
+def test_a_checkpoint_may_name_an_argument_the_caller_supplied(artifact):
+    """The shipped capability ties its checkpoint to the member that was asked for.
+
+    Asserted on the artifact as well as through a run, because this is the
+    property that makes the run above pass and it is one hand edit away from
+    being lost again.
+    """
+    from replay.artifact.conditions import parameters_in
+
+    checked = [s.checkpoint for s in artifact.steps if s.checkpoint is not None]
+    assert checked, "the capability declares a checkpoint"
+    assert any("member_id" in parameters_in(c) for c in checked)
+
+
+def test_the_log_and_the_result_agree_about_a_step(artifact, tmp_path):
+    """One step, two records, one evidence directory — they have to match.
+
+    `_perform` wrote its `step` event the moment the action returned, before
+    the recovery rules fired and before the checkpoint ran. So `run.jsonl` said
+    `recovered: []` for a step that recovered twice and then failed, while
+    `result.json`'s copy of the same step said otherwise.
+    """
+    with EvidenceRecorder("step-record", root=tmp_path) as recorder:
+        result = ReplayExecutor(
+            MinimalSurface("SYSTEM NOTICE\nScheduled maintenance"), artifact, recorder=recorder
+        ).run({"member_id": "12345"})
+
+    logged = [json.loads(line) for line in (recorder.dir / "run.jsonl").read_text().splitlines()]
+    by_id = {e["step_id"]: e for e in logged if e["kind"] == "step"}
+
+    assert result.steps[-1].recovered, "the recovery rule fired"
+    for step in result.steps:
+        assert by_id[step.step_id]["recovered"] == step.recovered
+        assert by_id[step.step_id]["ok"] == step.ok
 
 
 # ---------- business outcomes ----------
@@ -259,6 +377,27 @@ def test_evidence_is_written_for_every_replay(executor):
     assert result.evidence_dir == str(recorder_dir)
 
 
+def test_a_step_id_cannot_write_outside_the_evidence_directory(artifact, tmp_path):
+    """`Step.id` was interpolated straight into an evidence path.
+
+    It is `min_length=1, max_length=32` with no pattern, unlike every other
+    identifier in the schema, so `../../../../pwned` wrote a DOM dump outside
+    the evidence root — and did not even raise, because the recorder's
+    containment check is purely lexical.
+    """
+    escaping = artifact.model_copy(deep=True)
+    escaping.steps[2] = escaping.steps[2].model_copy(update={"id": "../../../../pwned"})
+
+    with EvidenceRecorder("path-escape", root=tmp_path) as recorder:
+        result = ReplayExecutor(
+            MarkupSurface("nothing this capability expects"), escaping, recorder=recorder
+        ).run({"member_id": "12345"})
+
+    dom = (recorder.dir / result.failure.evidence["dom"]).resolve()
+    assert dom.is_relative_to(recorder.dir.resolve()), dom
+    assert dom.exists()
+
+
 def test_generated_run_ids_do_not_collide():
     """The root cause of #50, pinned without waiting on a clock.
 
@@ -343,6 +482,78 @@ def test_sensitive_arguments_never_reach_the_evidence(meridian_server, artifact,
     )
     assert "12345" not in written
     assert "«redacted»" in written
+
+
+# ---------- the run survives its own accidents ----------
+
+
+def test_an_unexpected_error_still_leaves_a_result(artifact, tmp_path):
+    """`_finish` ran after the `except` clauses rather than in a `finally`.
+
+    So anything outside `ControlNotHeld` and `SurfaceError` — a raw driver
+    error, a KeyboardInterrupt during a 900-second escalation wait — lost
+    `result.json` entirely and made the run invisible to `reliability`. The
+    error still propagates; it just no longer takes the evidence with it.
+    """
+
+    class Exploding(MinimalSurface):
+        def act(self, *_args, **_kwargs):
+            raise RuntimeError("the driver fell over")
+
+    with (
+        EvidenceRecorder("unexpected-error", root=tmp_path) as recorder,
+        pytest.raises(RuntimeError),
+    ):
+        ReplayExecutor(Exploding(""), artifact, recorder=recorder).run({"member_id": "12345"})
+
+    written = json.loads((recorder.dir / "result.json").read_text())
+    assert written["status"] == "failed"
+    assert written["run_id"] == recorder.run_id
+
+
+def test_a_run_that_reached_a_person_twice_reports_both_handoffs():
+    """`result.escalation` overwrote, so the first operator vanished from the
+    result while staying in the log."""
+    result = ReplayResult(capability="x@1.0.0", run_id="r", status=ReplayStatus.FAILED)
+    result.escalations.append({"resolution": "resumed", "operator_note": "first"})
+    result.escalations.append({"resolution": "aborted", "operator_note": "second"})
+
+    assert [e["operator_note"] for e in result.to_dict()["escalations"]] == ["first", "second"]
+    assert result.escalation["operator_note"] == "second", "the latest is still the headline"
+
+
+def test_a_retried_step_does_not_hide_the_tier_its_first_attempt_needed():
+    """The drift signal REPORT §3 rests on, keyed by step id and so overwritten."""
+    result = ReplayResult(capability="x@1.0.0", run_id="r", status=ReplayStatus.SUCCESS)
+    for tier in (5, 1):
+        result.steps.append(
+            StepReport(step_id="s3", intent="Click.", action="click", ok=True, tier_used=tier)
+        )
+
+    assert result.locator_tiers == {"s3": 5}
+
+
+def test_a_navigate_step_whose_url_is_a_parameter_is_rebased(meridian_server, artifact, tmp_path):
+    """`_value` returned the caller's value before the NAVIGATE branch could
+    rebase it, so a parameterised entry point went to the recorded deployment
+    while every other step went to the one under test."""
+    parameterised = artifact.model_copy(deep=True)
+    parameterised.inputs.append(
+        ParamSpec(name="entry_url", description="Where this deployment lives.", required=True)
+    )
+    parameterised.steps[0] = parameterised.steps[0].model_copy(
+        update={"value": ParamRef(param="entry_url")}
+    )
+
+    with (
+        WebSurface() as surface,
+        EvidenceRecorder("navigate-param", root=tmp_path) as recorder,
+    ):
+        result = ReplayExecutor(
+            surface, parameterised, recorder=recorder, base_url=meridian_server
+        ).run({"member_id": "12345", "entry_url": "http://127.0.0.1:8080/"})
+
+    assert result.status is ReplayStatus.SUCCESS, result.failure
 
 
 # ---------- rebasing ----------

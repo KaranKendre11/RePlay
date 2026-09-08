@@ -17,12 +17,34 @@ callable by an agent, and neither can audit an embedded lambda.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from replay.artifact.locators import Locator
+
+
+class ParamText(BaseModel):
+    """The caller's value for a parameter, substituted at replay time.
+
+    Screen chrome proves only that a screen of the right *shape* is loaded.
+    "Open Sub-Account" is on every member's page, so a checkpoint asserting it
+    cannot tell member 12345's screen from member 22222's — and a balance read
+    off the wrong one is returned as ``success``. A parameter is the one thing a
+    checkpoint may name without becoming a single-use assertion: unlike an
+    output it is known before the browser opens, because the caller supplied it.
+
+    Structurally identical to :class:`replay.artifact.schema.ParamRef` and
+    deliberately not that class — the schema imports this module, so reusing it
+    would make the import circular. Both serialise as ``{"param": "member_id"}``,
+    which is what a reviewer sees.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    param: str = Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=64)
 
 
 class ElementState(StrEnum):
@@ -38,10 +60,15 @@ class _Condition(BaseModel):
 
 
 class TextPresent(_Condition):
-    """Visible text appears somewhere in scope."""
+    """Visible text appears somewhere in scope.
+
+    ``text`` may be a :class:`ParamText` instead of a literal, which is how a
+    checkpoint asserts *whose* screen this is rather than merely that a screen
+    of this kind is loaded.
+    """
 
     kind: Literal["text_present"] = "text_present"
-    text: str
+    text: str | ParamText
     frame_path: list[str] | None = None
 
 
@@ -115,3 +142,36 @@ Condition = Annotated[
 AllOf.model_rebuild()
 AnyOf.model_rebuild()
 Not.model_rebuild()
+
+
+def parameters_in(condition: Condition) -> set[str]:
+    """Every parameter this condition cannot be evaluated without."""
+    match condition:
+        case TextPresent(text=ParamText() as ref):
+            return {ref.param}
+        case AllOf() | AnyOf():
+            return {name for c in condition.conditions for name in parameters_in(c)}
+        case Not():
+            return parameters_in(condition.condition)
+    return set()
+
+
+def substitute(condition: Condition, values: Mapping[str, str]) -> Condition:
+    """Resolve parameter references against the caller's bound arguments.
+
+    Done here rather than in each surface, so a surface only ever sees literal
+    conditions and every implementation of the protocol gets parameterised
+    checkpoints for free.
+    """
+    match condition:
+        case TextPresent(text=ParamText() as ref):
+            return condition.model_copy(update={"text": values[ref.param]})
+        case AllOf() | AnyOf():
+            return condition.model_copy(
+                update={"conditions": [substitute(c, values) for c in condition.conditions]}
+            )
+        case Not():
+            return condition.model_copy(
+                update={"condition": substitute(condition.condition, values)}
+            )
+    return condition
