@@ -40,7 +40,7 @@ from replay.artifact import (
 )
 from replay.artifact.overrides import DEFAULT_ROOT as OVERRIDES_ROOT
 from replay.artifact.overrides import OverrideRejected, TenantUnknown
-from replay.artifact.schema import CapabilityArtifact
+from replay.artifact.schema import CapabilityArtifact, unrunnable_on_a_browser
 from replay.engine import ReplayExecutor, ReplayStatus
 from replay.escalation import ConsoleEscalation, InterventionQueue
 from replay.escalation.console import create_console
@@ -97,6 +97,7 @@ def summarise(artifact: CapabilityArtifact) -> dict[str, Any]:
         "title": artifact.title,
         "description": artifact.description,
         "application": artifact.app.product,
+        "product_version": artifact.app.product_version,
         "surface": artifact.app.surface.value,
         "arguments": invocation_schema(artifact),
         "returns": [
@@ -184,6 +185,8 @@ def create_api(
     def invoke(name: str, request: InvokeRequest, version: str | None = None) -> JSONResponse:
         """Run a capability. This is the production path an agent triggers."""
         artifact = specialise(store.load(name, version), request.tenant, root=overrides_dir)
+        if (wrong_surface := unrunnable_on_a_browser(artifact)) is not None:
+            return JSONResponse({"error": wrong_surface}, status_code=409)
 
         # The declared types, applied. They are published to every calling
         # agent as this capability's contract and nothing enforced them:

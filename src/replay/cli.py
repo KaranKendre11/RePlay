@@ -236,6 +236,7 @@ def run_capability(
     """
     from replay.artifact import ArtifactNotFound, ArtifactStore, specialise
     from replay.artifact.overrides import OverrideRejected
+    from replay.artifact.schema import unrunnable_on_a_browser
     from replay.engine import ReplayExecutor
     from replay.escalation import ConsoleEscalation, InterventionQueue, serve_console
     from replay.evidence import EvidenceRecorder, new_run_id
@@ -255,6 +256,10 @@ def run_capability(
     except (ArtifactNotFound, OverrideRejected) as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from exc
+
+    if (wrong_surface := unrunnable_on_a_browser(artifact)) is not None:
+        typer.secho(wrong_surface, fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
 
     allowlist = _load_allowlist(policy_file)
     gate = RiskGate(allow_risky=allow_risky, allow_irreversible=allow_irreversible)

@@ -44,6 +44,7 @@ from replay.artifact.schema import (
     RiskClass,
     Step,
     TargetSpec,
+    unrunnable_on_a_browser,
 )
 
 RATIONALE = "Recorded from the live surface; role+name does not resolve on this control."
@@ -231,6 +232,29 @@ def test_success_must_be_verifiable():
     unchecked = [s.model_copy(update={"checkpoint": None}) for s in artifact().steps]
     with pytest.raises(ValidationError, match="checkpoint"):
         artifact(steps=unchecked)
+
+
+def test_a_step_id_is_constrained_like_every_other_identifier():
+    """It was the one identifier here with a length limit and no pattern.
+
+    The executor interpolates a step id into an evidence file path, so it is
+    also the one that most needed the pattern.
+    """
+    for bad in ("../oops", "s1/s2", "S1", ""):
+        with pytest.raises(ValidationError):
+            Step(id=bad, intent="Read something.", action=Action.READ, target=target())
+
+
+def test_a_capability_recorded_on_another_surface_is_refused_not_attempted():
+    """``SurfaceKind``'s docstring promises this and nothing read the field.
+
+    So it did exactly what its own docstring says is prevented: fail obscurely
+    at the first locator, against a real application.
+    """
+    assert unrunnable_on_a_browser(artifact()) is None
+
+    desktop = artifact(app=AppRef(product="MERIDIAN", entry_url_pattern="x", surface="desktop"))
+    assert "desktop" in unrunnable_on_a_browser(desktop)
 
 
 # ---------- action operands ----------
