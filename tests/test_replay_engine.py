@@ -124,6 +124,26 @@ def test_one_members_balance_is_never_returned_for_another(artifact, tmp_path):
     assert someone_else.outputs == {}, "no balance at all is the only safe answer"
 
 
+def test_a_declared_output_that_never_appeared_is_not_a_success(artifact, tmp_path):
+    """`success` means "use `outputs`", so every declared key has to be in it.
+
+    The read step here resolves and runs and simply produces no value — an
+    empty cell, a column that moved. Nothing checked that what the contract
+    promised was actually extracted, so the caller got `success` and a dict
+    missing the only key it asked for.
+    """
+    screen = "MEMBER 12345  DELORES A HARTWELL\nOpen Sub-Account"
+
+    with EvidenceRecorder("output-missing", root=tmp_path) as recorder:
+        result = ReplayExecutor(MinimalSurface(screen, read=None), artifact, recorder=recorder).run(
+            {"member_id": "12345"}
+        )
+
+    assert result.status is ReplayStatus.FAILED
+    assert "current_savings_balance" in result.failure.expected
+    assert result.failure.step_id == "s4"
+
+
 def test_a_checkpoint_may_name_an_argument_the_caller_supplied(artifact):
     """The shipped capability ties its checkpoint to the member that was asked for.
 

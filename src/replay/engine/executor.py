@@ -391,6 +391,21 @@ class ReplayExecutor:
                 return
 
         result.outputs = self._extract_outputs()
+        missing = [spec for spec in self.artifact.outputs if spec.name not in result.outputs]
+        if missing:
+            # `success` means "use `outputs`". Handing back a dict short of a
+            # key the contract declares, with nothing to say so, makes the
+            # caller find out by KeyError at best and by using a stale value at
+            # worst. A read that produced nothing is a failure of the flow.
+            result.failure = Failure(
+                step_id=missing[0].source.step_id,
+                failure_class=FailureClass.CHECKPOINT_UNMET,
+                expected=f"a value for declared output(s) {[m.name for m in missing]}",
+                observed=self._observed(),
+                evidence=self._capture(missing[0].source.step_id),
+            )
+            return
+
         result.status = ReplayStatus.SUCCESS
 
     def _after_step(
@@ -692,6 +707,11 @@ class ReplayExecutor:
         )
 
     def _extract_outputs(self) -> dict[str, str]:
+        """The declared outputs that were actually read.
+
+        Filtered rather than assumed: a step that ran without producing a value
+        has no entry here, and :meth:`_execute` refuses to call that a success.
+        """
         return {
             spec.name: self._reads[spec.source.step_id]
             for spec in self.artifact.outputs
