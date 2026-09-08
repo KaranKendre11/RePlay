@@ -135,7 +135,7 @@ class WebSurface:
         self._default_dialog = default_dialog
         self._pending_dialog: DialogPolicy | None = None
         self._dialogs: list[str] = []
-        self._last_status: int | None = None
+        self._status_by_url: dict[str, int] = {}
         self._controller = Controller.AUTOMATION
         # No allowlist means no restriction, which is only ever acceptable in a
         # test. Production callers pass one; the CLI always does.
@@ -239,14 +239,45 @@ class WebSurface:
             dialog.accept() if policy is DialogPolicy.ACCEPT else dialog.dismiss()
 
     def _note_response(self, response: Any) -> None:
-        """Remember the status of the most recent document navigation.
+        """Remember each document navigation's status, against the URL it landed on.
 
         Needed to tell a 500 apart from a page that merely looks empty — the
         difference between a hard failure and a business outcome.
+
+        Per URL rather than one "most recent": under a ``<frameset>`` the top
+        document and every child are separate navigations racing each other, so
+        last-writer-wins reported the frameset's 200 while the work frame showed
+        SESSION EXPIRED behind a 440. Keyed by URL because that is what
+        ``Frame.url`` answers with, and because a detached frame then stops
+        mattering rather than keeping a stale status alive.
         """
         with contextlib.suppress(PlaywrightError):
             if response.request.is_navigation_request():
-                self._last_status = response.status
+                self._status_by_url[response.url] = response.status
+
+    def _content_status(self) -> int | None:
+        """The status of the frame whose content is being judged.
+
+        A frameset document's own 200 says nothing — it is a frameset, there is
+        nothing in it to fail — so only frames carrying content are considered.
+        Among those a failure beats a success: whichever frame is saying
+        something went wrong is the one the caller is asking about.
+        """
+        statuses: list[int] = []
+        for path in self._frame_paths():
+            try:
+                frame = self.frame_for(path)
+                if not self._has_body(frame):
+                    continue
+            except (FrameNotFound, PlaywrightError, PlaywrightTimeout):
+                continue
+            status = self._status_by_url.get(frame.url)
+            if status is not None:
+                statuses.append(status)
+        failed = [s for s in statuses if s >= 400]
+        if failed:
+            return failed[0]
+        return statuses[-1] if statuses else None
 
     # -- frames -----------------------------------------------------------
 
@@ -363,7 +394,7 @@ class WebSurface:
             title=self._title(),
             frames=[v for v in views if v.aria],
             screenshot=shot,
-            http_status=self._last_status,
+            http_status=self._content_status(),
             dialogs_seen=list(self._dialogs),
             note=note,
         )
@@ -692,7 +723,7 @@ class WebSurface:
             if action is Action.NAVIGATE:
                 response = self.page.goto(str(value), timeout=timeout_ms)
                 if response is not None:
-                    self._last_status = response.status
+                    self._status_by_url[response.url] = response.status
                 return self._done(action, True, navigated=True, since=before)
 
             if action in (Action.ACCEPT_DIALOG, Action.DISMISS_DIALOG):
@@ -848,7 +879,7 @@ class WebSurface:
                 return self._element_state_matches(condition)
 
             case HttpStatusIs():
-                return self._last_status == condition.status
+                return self._content_status() == condition.status
 
             case AllOf():
                 return all(self.evaluate(c) for c in condition.conditions)

@@ -424,6 +424,23 @@ def test_a_surface_that_cannot_look_fails_a_checkpoint_rather_than_passing_it(su
     assert not surface.evaluate(TextPresent(text="MEMBER INQUIRY"))
 
 
+def test_http_status_reports_the_frame_whose_content_is_being_judged(surface, meridian_server):
+    """Regression: the frameset's 200 outran the work frame's 440.
+
+    The top document and each child are separate navigations racing, and
+    ``_note_response`` kept only the most recent from any of them. The frameset
+    and the nav frame are exempt from the session check, so both are 200 while
+    the work frame carries SESSION EXPIRED behind a 440 — and the taxonomy read
+    200 and ``HttpStatusIs(440)`` as False.
+    """
+    surface.act(Action.NAVIGATE, value=f"{meridian_server}/?inject=timeout")
+
+    assert "SESSION EXPIRED" in surface.text_of(WORK), "the work frame really did fail"
+    assert surface.observe(screenshot=False).http_status == 440
+    assert surface.evaluate(HttpStatusIs(status=440))
+    assert not surface.evaluate(HttpStatusIs(status=200))
+
+
 # ---------- the protocol ----------
 
 
