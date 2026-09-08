@@ -52,6 +52,33 @@ def test_deny_beats_allow():
         both.check_navigation("http://127.0.0.1:8080/transfer/new")
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8080/member/../admin/users",
+        "http://127.0.0.1:8080/member/%2e%2e/admin/users",
+        "http://127.0.0.1:8080/member/./../../wire/send",
+    ],
+)
+def test_dot_segments_cannot_walk_around_a_deny_rule(url):
+    """The browser resolves the path; the guardrail has to resolve it first.
+
+    ``fnmatch``'s ``*`` crosses ``/`` and both ends are anchored, so these
+    matched the allow rule ``/member/*``, missed the deny rule, and were then
+    fetched as ``/admin/users``.
+    """
+    with pytest.raises(PolicyRefused, match="deny rule"):
+        Allowlist.from_file("policy.toml").check_navigation(url)
+
+
+def test_userinfo_and_case_are_not_part_of_the_host():
+    """``netloc`` carries both, and a glob will happily match on either."""
+    listed = Allowlist(domains=("127.0.0.1:*",), routes=("*",))
+    with pytest.raises(PolicyRefused, match="not in the allowlist"):
+        listed.check_navigation("http://127.0.0.1:@evil.com/")
+    Allowlist(domains=("localhost:8080",), routes=("*",)).check_navigation("http://LOCALHOST:8080/")
+
+
 def test_an_empty_allowlist_permits_nothing():
     """Never "everything". A misconfiguration must fail closed."""
     with pytest.raises(PolicyRefused, match="no domains are allowlisted"):
