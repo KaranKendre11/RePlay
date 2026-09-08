@@ -605,6 +605,7 @@ class WebSurface:
 
             note: str | None = None
             navigated = False
+            read: str | None = None
 
             if expect_navigation:
                 # expect_navigation is not merely a wait: it is what makes
@@ -614,13 +615,20 @@ class WebSurface:
                 # plainly changed. Measured, not assumed.
                 own = self.frame_for(target.frame_path)
                 destination = self._navigation_frame(handle, own)
+                acted = False
                 try:
                     with destination.expect_navigation(timeout=timeout_ms):
                         read = perform()
+                        acted = True
                     navigated = True
                 except PlaywrightTimeout:
-                    # The action itself succeeded; the page just did not move.
-                    # That is information, not a failure.
+                    # Two very different timeouts arrive here: the click itself
+                    # timing out, and the click working while nothing moved.
+                    # Only the second is information rather than a failure, and
+                    # reporting the first as ok=True would mean a step that
+                    # never happened is recorded as having happened.
+                    if not acted:
+                        raise
                     note = self._explain_stalled_navigation(before)
             else:
                 read = perform()

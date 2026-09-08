@@ -442,3 +442,24 @@ def test_a_click_that_moves_nothing_explains_itself(surface):
     assert outcome.ok, "the click itself succeeded"
     assert not outcome.navigated
     assert "dialog" in outcome.note and "accept" in outcome.note
+
+
+def test_a_click_that_never_happened_is_a_failure_not_a_stalled_navigation(surface):
+    """Regression: the two timeouts under expect_navigation are not the same event.
+
+    ``<head>`` resolves and is never clickable, so the click times out inside
+    the navigation wait. That used to escape ``act`` as an ``UnboundLocalError``
+    — which is a ``NameError``, so nothing here caught it and it killed the
+    replay with no FailureClass and no evidence. Reporting it as ``ok=True``
+    instead would be worse still: a step that never happened, recorded as done.
+    """
+    outcome = surface.act(
+        Action.CLICK,
+        spec("Unclickable element", SelectorLocator(engine="css", expression="head")),
+        expect_navigation=True,
+        timeout_ms=1_000,
+    )
+    assert not outcome.ok
+    assert "Timeout" in outcome.error
+    assert not outcome.navigated
+    assert outcome.note is None, "nothing succeeded, so there is no stalled navigation to explain"
