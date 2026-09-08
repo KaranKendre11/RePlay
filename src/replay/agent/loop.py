@@ -10,13 +10,16 @@ Three choices are worth defending.
 log of actions taken, and the current screen. State lives in the action log, not
 in a growing message history. That keeps token use flat over a long run, removes
 a whole class of tool-call pairing bugs, and — more usefully — means the loop
-behaves the same on turn 20 as on turn 2.
+behaves the same on turn 20 as on turn 2. That flatness is within a run: the
+action log is instance state, bound to one goal and one evidence directory, so a
+loop performs one run and refuses a second.
 
-**Failures are fed back, not raised.** A bad index, a missed click or a URL the
-allowlist refuses becomes a line in the action log that the model can see and
-respond to. A run that dies on the first mistake teaches us nothing about whether
-the model can recover, which is exactly what we need to know before trusting it
-to record a capability.
+**Failures are fed back, not raised.** A bad index, a call outside the
+vocabulary, an argument of the wrong type, a missed click or a URL the allowlist
+refuses becomes a line in the action log that the model can see and respond to.
+A run that dies on the first mistake teaches us nothing about whether the model
+can recover, which is exactly what we need to know before trusting it to record
+a capability.
 
 **A stop the model cannot resolve is a question for a person.** Giving up,
 stalling and erroring are the three ways a run ends with the goal unmet and the
@@ -36,7 +39,7 @@ from typing import Any
 
 from replay.agent.llm import LLMClient, LLMError, image_content
 from replay.agent.prompt import SYSTEM, goal_message, render_observation
-from replay.agent.vocabulary import TERMINAL_TOOLS, TOOLS, ToolCall
+from replay.agent.vocabulary import TERMINAL_TOOLS, TOOLS, ToolCall, validate
 from replay.artifact.schema import Action, TargetSpec
 from replay.escalation.control import (
     EscalationHandler,
@@ -247,10 +250,24 @@ class DiscoveryLoop:
 
         self._history: list[str] = []
         self._recent: list[str] = []
+        self._started = False
 
     # -- public -----------------------------------------------------------
 
     def run(self, goal: str, target: str) -> DiscoveryResult:
+        # One loop, one run. The action log, the stall counter and the recorder
+        # are all per-run state held on the instance, and a second run would
+        # inherit all three: run B's model would be shown actions it never took
+        # against a different goal, run B could be declared stalled on its first
+        # decision, and both results would be written into one evidence
+        # directory under run A's id. Building another loop costs nothing.
+        if self._started:
+            raise RuntimeError(
+                "this DiscoveryLoop has already run; build a new one, with its own "
+                "recorder, for another goal"
+            )
+        self._started = True
+
         result = DiscoveryResult(
             run_id=self.recorder.run_id,
             goal=goal,
@@ -267,10 +284,28 @@ class DiscoveryLoop:
             escalation_available=not isinstance(self.escalation, NoEscalation),
         )
 
-        self._explore(goal, target, result)
-
-        self.recorder.event("run_finished", status=result.status.value, reason=result.reason)
-        self.recorder.result(result.to_dict())
+        try:
+            self._explore(goal, target, result)
+        except Exception as exc:
+            # A crash anywhere below here is still a run that opened the target
+            # and may already have changed something on the far side. It ends
+            # like every other stop — an ERROR status, a reason, and a written
+            # record — rather than as a traceback that loses the only account of
+            # what was done.
+            result.status = StopReason.ERROR
+            result.reason = f"unexpected {type(exc).__name__}: {exc}"
+            self.recorder.event("run_crashed", error=result.reason)
+        finally:
+            # The warnings ride on the terminal event as well as in result.json,
+            # because "this capability is unproven" is the one thing a reviewer
+            # must not have to go looking for.
+            self.recorder.event(
+                "run_finished",
+                status=result.status.value,
+                reason=result.reason,
+                warnings=result.warnings,
+            )
+            self.recorder.result(result.to_dict())
         return result
 
     # -- the loop ---------------------------------------------------------
@@ -278,9 +313,12 @@ class DiscoveryLoop:
     def _explore(self, goal: str, target: str, result: DiscoveryResult) -> None:
         """Open the target and take turns until something ends the run.
 
-        Split out from :meth:`run` so that every way of stopping — including the
-        entry point being refused — still writes the same evidence on the way
-        out. A stop that skips the record is a stop nobody can review.
+        Split out from :meth:`run`, and called inside its ``try``/``finally``, so
+        that every way of stopping — the entry point being refused, a budget, a
+        stop the model chose, or an exception nobody predicted — still writes the
+        same evidence on the way out. A stop that skips the record is a stop
+        nobody can review. Returning is therefore the normal way to end here;
+        raising is handled, not relied on.
         """
         opening = self.surface.act(Action.NAVIGATE, value=target)
         result.actions.append(
@@ -343,6 +381,18 @@ class DiscoveryLoop:
                 if self._escalate(result, goal, step, observation, rendered, refs):
                     continue
                 return
+
+            refusal = validate(call)
+            if refusal:
+                # The model is an untrusted input source, so a call that is not
+                # in the vocabulary, or whose arguments are not the declared
+                # types, is fed back exactly like a bad index: the model sees
+                # precisely what was wrong and gets another turn. Acting on it
+                # would mean typing the string "None" into a live form, or using
+                # a dict as a parameter name.
+                self._history.append(f"{call.name} → REFUSED: {refusal}")
+                self.recorder.event("bad_call", step=step, tool=call.name, error=refusal)
+                continue
 
             if call.name in TERMINAL_TOOLS:
                 self._finalise(call, result)
@@ -436,6 +486,16 @@ class DiscoveryLoop:
         parameter = call.arg("parameter_name") or None
         output = call.arg("output_name") or None
 
+        # A read that came back with nothing did not do what it was asked, even
+        # though nothing errored: an empty cell recorded as an observed output
+        # makes the artifact advertise a value the run never saw. Failing it
+        # here keeps it out of the contract, out of the synthesised steps, and
+        # in the action log where the model can pick a different cell.
+        ok, error = outcome.ok, outcome.error
+        if ok and action is Action.READ and not (outcome.read_value or "").strip():
+            ok = False
+            error = "read returned no text, so there is no output to record"
+
         recorded = RecordedAction(
             step_id=step_id,
             intent=self._intent(call, candidate),
@@ -448,15 +508,20 @@ class DiscoveryLoop:
             accept_dialog=dialog,
             tier_used=int(outcome.resolution.tier) if outcome.resolution else None,
             read_value=outcome.read_value,
-            ok=outcome.ok,
+            ok=ok,
             navigated=outcome.navigated,
             note=outcome.note,
-            error=outcome.error,
+            error=error,
         )
 
-        if parameter and value:
+        # A declaration only joins the capability's contract if the action
+        # carrying it actually worked. Synthesis drops failed actions, so a
+        # parameter taken from one becomes a required input that no step
+        # consumes: the caller's argument is accepted, silently discarded, and
+        # the flow runs against whatever the screen already held.
+        if ok and parameter and value:
             result.parameters[parameter] = value
-        if output and outcome.read_value is not None:
+        if ok and output and outcome.read_value is not None:
             result.outputs[output] = outcome.read_value
 
         summary = f"{call.name} [{candidate.index}] {candidate.describe!r}"
@@ -468,7 +533,7 @@ class DiscoveryLoop:
         # retrying blindly and the model understanding what it just hit.
         if outcome.note:
             summary += f" — NOTE: {outcome.note}"
-        self._record(result, recorded, summary, outcome.ok, outcome.error)
+        self._record(result, recorded, summary, ok, error)
 
     def _candidate(self, call: ToolCall, candidates: list[Candidate]) -> Candidate | None:
         index = call.arg("index")
@@ -618,7 +683,21 @@ class DiscoveryLoop:
         # The model claims success; verify the claim against the live screen
         # before believing it. An unverified checkpoint would be recorded into
         # the artifact and asserted on every future replay.
-        if checkpoint and checkpoint not in self._visible_text():
+        #
+        # Absent is not verified. `checkpoint_text` is a required argument but
+        # nothing on the provider side enforces that it is non-empty, so an empty
+        # or whitespace-only string is routine model output — and treating it as
+        # "nothing to check" would let a bare `finish` on turn one produce a
+        # capability that asserts nothing.
+        if not checkpoint:
+            result.status = StopReason.ERROR
+            result.reason = (
+                "model claimed success without checkpoint text, so there is nothing "
+                "on the screen proving the goal was met"
+            )
+            return
+
+        if checkpoint not in self._visible_text():
             result.status = StopReason.ERROR
             result.reason = (
                 f"model claimed success with checkpoint {checkpoint!r}, "
