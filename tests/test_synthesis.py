@@ -14,6 +14,7 @@ import pytest
 
 from replay.agent.loop import DiscoveryResult, RecordedAction, StopReason
 from replay.artifact import ArtifactStore, CapabilityArtifact
+from replay.artifact.conditions import TextPresent, parameters_in
 from replay.artifact.locators import LabelAdjacentLocator, RoleNameLocator
 from replay.artifact.schema import Action, ApprovalState, ParamRef, RiskClass, TargetSpec
 from replay.synthesis import (
@@ -174,6 +175,39 @@ def test_a_volatile_checkpoint_is_replaced_and_the_reason_recorded():
     assert synthesis.checkpoint_text == "Current Balance"
     assert any("varies per invocation" in note for note in synthesis.notes)
     assert synthesis.artifact.provenance.notes == synthesis.notes
+
+
+def test_a_checkpoint_naming_a_parameter_is_kept_by_reference_not_thrown_away():
+    """The headline defect, at its source.
+
+    Parameters and outputs were both "volatile", so a checkpoint mentioning the
+    member id was rejected exactly like one mentioning the balance, and the
+    generic chrome that replaced it ("Open Sub-Account") is true on every
+    member's page. A parameter is supplied by the caller, so it can be asserted
+    by reference — and it is the only thing on that screen that says *whose* it
+    is.
+    """
+    synthesis = synthesize(
+        run(checkpoint_text="MEMBER 12345 DELORES A HARTWELL"), name="lookup_balance"
+    )
+    checkpoint = next(s.checkpoint for s in synthesis.artifact.steps if s.checkpoint)
+
+    assert parameters_in(checkpoint) == {"member_id"}
+    assert "Current Balance" in [
+        c.text for c in checkpoint.conditions if isinstance(c.text, str)
+    ], "still proves the flow arrived, as well as who it arrived for"
+    assert any("member_id" in note for note in synthesis.notes)
+
+
+def test_the_balance_is_still_refused_as_a_checkpoint():
+    """An output is unknown at replay time; a parameter is not. The two are
+    not interchangeable, and confusing them in either direction is a defect."""
+    synthesis = synthesize(
+        run(checkpoint_text="4,211.03", checkpoint_candidates=["Current Balance"]),
+        name="lookup_balance",
+    )
+    checkpoint = next(s.checkpoint for s in synthesis.artifact.steps if s.checkpoint)
+    assert checkpoint == TextPresent(text="Current Balance")
 
 
 def test_synthesis_refuses_when_no_stable_checkpoint_exists():

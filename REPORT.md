@@ -205,8 +205,20 @@ much bigger change; the run warns instead.
    ladder.
 3. **Shared sub-flows.** Both capabilities duplicate a search prefix.
 
-**One thing I got wrong.** A real `gpt-5` run offered `"4,211.03"` — the balance it had just read —
-as proof of success (`evidence/discovery-20260906T091017Z`): true for member 12345, false for
-everyone else, so a capability asserting it would pass once and fail forever. The loop catches what
-the model cannot, because it knows which values were parameters and which were outputs; synthesis
-substitutes stable screen text, records why, and refuses outright when there is none.
+**One thing I got wrong, and the thing I got wrong fixing it.** A real `gpt-5` run offered
+`"4,211.03"` — the balance it had just read — as proof of success
+(`evidence/discovery-20260906T091017Z`): true for member 12345, false for everyone else, so a
+capability asserting it would pass once and fail forever. The loop catches what the model cannot,
+because it knows which values were parameters and which were outputs.
+
+The first fix substituted stable screen text — and swapped a checkpoint that was too specific for
+one that was too generic. `"Open Sub-Account"` is a link on *every* member's page, so it proved a
+member screen was loaded and never *which*, and the balance is read from whatever SAVINGS row is in
+the work frame. Both member-independent: any failure leaving the wrong page in `workframe` returned
+someone else's balance as `success`. The cause was treating parameters and outputs as one
+"volatile" set. They are opposites. An output is unknown until the run produces it; a **parameter**
+is supplied by the caller before the browser opens, so a checkpoint may name it — and it is the
+only assertion on that screen that says whose it is. A checkpoint text may now be a `ParamRef`
+resolved from the caller's arguments at replay time, synthesis prefers a parameter-bearing
+checkpoint over screen chrome (pairing the two where it has both), and outputs are still refused
+outright.

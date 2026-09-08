@@ -13,6 +13,7 @@ The three that carry the most weight:
 import json
 
 import pytest
+from test_surface_protocol import MinimalSurface
 
 from replay.artifact import ArtifactStore
 from replay.artifact.conditions import TextPresent
@@ -90,6 +91,51 @@ def test_no_model_is_ever_constructed_during_a_replay(executor, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     assert executor.run({"member_id": "12345"}).status is ReplayStatus.SUCCESS
+
+
+def test_one_members_balance_is_never_returned_for_another(artifact, tmp_path):
+    """The worst thing this system could do, pinned.
+
+    The screen here is stuck on member 12345 — which is what any failure that
+    leaves the wrong page in ``workframe`` looks like. Every check the artifact
+    made before this fix was true of that screen no matter who was asked about:
+    "Open Sub-Account" is a link on every member's page, and the balance is read
+    from whatever SAVINGS row happens to be in the frame. So a lookup for 22222
+    came back ``success`` carrying 12345's money.
+
+    Nothing about the second run may resemble the first except the failure.
+    """
+    screen = "MEMBER 12345  DELORES A HARTWELL\nSAVINGS  4,211.03\nOpen Sub-Account"
+
+    def lookup(member_id: str, run_id: str):
+        with EvidenceRecorder(run_id, root=tmp_path) as recorder:
+            surface = MinimalSurface(screen, read="4,211.03")
+            return ReplayExecutor(surface, artifact, recorder=recorder).run(
+                {"member_id": member_id}
+            )
+
+    theirs = lookup("12345", "balance-right-member")
+    assert theirs.status is ReplayStatus.SUCCESS, "the member actually on screen"
+    assert theirs.outputs == {"current_savings_balance": "4,211.03"}
+
+    someone_else = lookup("22222", "balance-wrong-member")
+    assert someone_else.status is ReplayStatus.FAILED
+    assert someone_else.failure.failure_class is FailureClass.CHECKPOINT_UNMET
+    assert someone_else.outputs == {}, "no balance at all is the only safe answer"
+
+
+def test_a_checkpoint_may_name_an_argument_the_caller_supplied(artifact):
+    """The shipped capability ties its checkpoint to the member that was asked for.
+
+    Asserted on the artifact as well as through a run, because this is the
+    property that makes the run above pass and it is one hand edit away from
+    being lost again.
+    """
+    from replay.artifact.conditions import parameters_in
+
+    checked = [s.checkpoint for s in artifact.steps if s.checkpoint is not None]
+    assert checked, "the capability declares a checkpoint"
+    assert any("member_id" in parameters_in(c) for c in checked)
 
 
 # ---------- business outcomes ----------

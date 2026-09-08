@@ -21,7 +21,10 @@ us the answer.
 **Checkpoints are asserted, not assumed.** A click that raises no error has not
 demonstrated anything. Without the assertion a replay reports success whenever
 nothing crashed, which is exactly the failure mode that makes UI automation
-untrustworthy. That holds for a step a human performed during a handoff too:
+untrustworthy. A checkpoint may also name a parameter, which is substituted
+from the caller's arguments before the surface ever sees it — screen chrome
+proves a member page is loaded, and only the member id proves it is the one
+that was asked for. That holds for a step a human performed during a handoff too:
 the automation does not repeat their action, but it does check the result,
 because "I have handled it" is a claim about the operator rather than about the
 application.
@@ -31,10 +34,11 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from replay.artifact.conditions import Condition
+from replay.artifact.conditions import Condition, ParamText, parameters_in, substitute
 from replay.artifact.schema import (
     Action,
     CapabilityArtifact,
@@ -83,6 +87,8 @@ def _describe(condition: Any) -> str:
     kind = getattr(condition, "kind", "condition")
     for attribute in ("text", "pattern", "name"):
         value = getattr(condition, attribute, None)
+        if isinstance(value, ParamText):
+            return f"{kind} <{value.param}>"
         if value:
             return f"{kind} {value!r}"
     nested = getattr(condition, "conditions", None)
@@ -154,6 +160,11 @@ def bind_parameters(artifact: CapabilityArtifact, supplied: dict[str, Any]) -> d
     document a reviewer is invited to tighten by hand, and a reviewer writing
     ``\d{5}`` should not silently get a looser check than the one they
     narrowed.
+
+    A condition may name a parameter too, and one naming an argument the caller
+    did not supply cannot be evaluated. That is a mismatch between the request
+    and the contract, so it is reported here with the rest of them rather than
+    as a mid-flow crash.
     """
     declared = {p.name: p for p in artifact.inputs}
     unknown = sorted(set(supplied) - set(declared))
@@ -174,7 +185,26 @@ def bind_parameters(artifact: CapabilityArtifact, supplied: dict[str, Any]) -> d
                 f"argument {name!r} does not match the declared pattern {spec.pattern!r}"
             )
         bound[name] = value
+
+    referenced = {n for c in _conditions(artifact) for n in parameters_in(c)}
+    unresolvable = sorted(referenced - set(bound))
+    if unresolvable:
+        raise InvalidArguments(
+            f"{artifact.ref} declares a condition on parameter(s) {unresolvable}, "
+            "for which no value was supplied"
+        )
     return bound
+
+
+def _conditions(artifact: CapabilityArtifact) -> Iterator[Condition]:
+    """Every condition the engine may be asked to evaluate during a run."""
+    for step in artifact.steps:
+        if step.checkpoint is not None:
+            yield step.checkpoint
+        for rule in step.on_error:
+            yield rule.when
+    for outcome in artifact.outcomes:
+        yield outcome.detect
 
 
 class ReplayExecutor:
@@ -207,6 +237,10 @@ class ReplayExecutor:
         self.recorder = recorder or EvidenceRecorder(new_run_id("replay"))
         self._reads: dict[str, str] = {}
         self._captures = 0
+        # The caller's arguments for the run in progress. Conditions are
+        # resolved against these, so a checkpoint can assert the record that was
+        # asked about rather than only the shape of the screen.
+        self._bound: dict[str, str] = {}
         # Default-deny: without an explicit gate, only safe capabilities run.
         self.gate = gate or RiskGate()
         # Default-nobody: an unattended run fails rather than waiting forever
@@ -237,6 +271,8 @@ class ReplayExecutor:
             )
             self._finish(result, started)
             return result
+
+        self._bound = bound
 
         # Sensitive values are masked before anything can write them, and the
         # controls holding them are covered before any screenshot is taken — on
@@ -393,7 +429,7 @@ class ReplayExecutor:
             result.failure = Failure(
                 step_id=step.id,
                 failure_class=(self._classify_screen(observed) or FailureClass.CHECKPOINT_UNMET),
-                expected=f"checkpoint {_describe(step.checkpoint)}",
+                expected=f"checkpoint {_describe(self._resolved(step.checkpoint))}",
                 observed=observed,
                 evidence=self._capture(step.id),
             )
@@ -428,7 +464,7 @@ class ReplayExecutor:
 
         deadline = time.monotonic() + self.step_timeout_ms / 1000
         while time.monotonic() < deadline:
-            if self.surface.evaluate(step.checkpoint) or self._detect_outcome(step) is not None:
+            if self._holds(step.checkpoint) or self._detect_outcome(step) is not None:
                 return
             time.sleep(0.1)
 
@@ -507,9 +543,23 @@ class ReplayExecutor:
             return rebase(step.value, base) if base else step.value
         return step.value
 
+    def _resolved(self, condition: Condition) -> Condition:
+        """The condition as it applies to *this* invocation."""
+        return substitute(condition, self._bound)
+
+    def _holds(self, condition: Condition) -> bool:
+        """Is this condition true right now, for the arguments we were given?
+
+        Every evaluation in the engine goes through here. A condition naming a
+        parameter is meaningless without the caller's value, and one path that
+        forgot to substitute would silently be asking the surface a different
+        question from the rest.
+        """
+        return self.surface.evaluate(self._resolved(condition))
+
     def _detect_outcome(self, step: Step) -> Outcome | None:
         for declared in self.artifact.outcomes:
-            if self.surface.evaluate(declared.detect):
+            if self._holds(declared.detect):
                 return Outcome(
                     code=declared.code,
                     message=declared.message,
@@ -518,12 +568,12 @@ class ReplayExecutor:
         return None
 
     def _verify(self, condition: Condition, step: Step, report: StepReport) -> bool:
-        if self.surface.evaluate(condition):
+        if self._holds(condition):
             return True
         # One retry after the recovery rules have had a chance. A checkpoint
         # that fails twice is a real failure, not a timing artefact.
         if self._recover(step, report):
-            return self.surface.evaluate(condition)
+            return self._holds(condition)
         return False
 
     def _recover(self, step: Step, report: StepReport) -> bool:
@@ -536,7 +586,7 @@ class ReplayExecutor:
         applied = False
         for rule in step.on_error:
             for _ in range(rule.max_attempts):
-                if not self.surface.evaluate(rule.when):
+                if not self._holds(rule.when):
                     break
                 self._apply(rule)
                 report.recovered.append(f"{rule.do.value}:{_describe(rule.when)}")

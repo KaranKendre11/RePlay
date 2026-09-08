@@ -107,8 +107,25 @@
         }
       ],
       "checkpoint": {
-        "kind": "text_present",
-        "text": "Open Sub-Account"
+        "kind": "all_of",
+        "conditions": [
+          {
+            "kind": "text_present",
+            "text": {
+              "param": "member_id"
+            },
+            "frame_path": [
+              "workframe"
+            ]
+          },
+          {
+            "kind": "text_present",
+            "text": "Open Sub-Account",
+            "frame_path": [
+              "workframe"
+            ]
+          }
+        ]
       },
       "on_error": [
         {

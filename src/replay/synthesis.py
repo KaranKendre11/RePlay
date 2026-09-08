@@ -16,8 +16,11 @@ Three things it will not simply copy through.
 
 **A checkpoint that asserts this run's data.** The first real gpt-5 run offered
 ``"4,211.03"`` as proof of success — the balance itself. True for member 12345,
-false for everyone else. Synthesis replaces a warned checkpoint with stable text
-from the same screen.
+false for everyone else. An output is unknown until the run produces it, so
+synthesis replaces it with stable text from the same screen. A *parameter* is
+not the same thing and is no longer treated as one: the caller supplies it, so a
+checkpoint naming the member id is kept and asserted by reference. It is the
+only assertion that distinguishes the right member's screen from any other's.
 
 **Business outcomes.** A single happy-path run cannot discover the failure space,
 so synthesis does not invent one. Outcomes are declared during review and
@@ -35,7 +38,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from replay.agent.loop import DiscoveryResult, RecordedAction, StopReason
-from replay.artifact.conditions import AllOf, Condition, TextPresent
+from replay.artifact.conditions import AllOf, Condition, ParamText, TextPresent
 from replay.artifact.locators import RoleNameLocator
 from replay.artifact.schema import (
     Action,
@@ -149,7 +152,25 @@ def classify_risk(action: RecordedAction) -> RiskClass:
 
 
 def choose_checkpoint(result: DiscoveryResult) -> tuple[Condition, str, list[str]]:
-    """Pick something that proves the flow reached the right *state*.
+    """Pick something that proves the flow reached the right state *for this caller*.
+
+    Parameters and outputs are not the same kind of value, and treating them as
+    one set of "volatile" text is what made this the worst defect in the system.
+    An **output** is this run's data — unknown at replay time, so a checkpoint
+    asserting it holds exactly once. A **parameter** is the opposite: the caller
+    supplies it before the browser opens, so a checkpoint may name it, and a
+    checkpoint that names it is the only kind that proves the screen belongs to
+    the record that was asked about. Rejecting both left "Open Sub-Account",
+    which is true on *every* member's page — too generic in exactly the way the
+    balance was too specific, and a lookup for member B could return member A's
+    balance as ``success``.
+
+    So a parameter is preferred rather than refused, and paired with stable
+    screen text where there is any: the parameter says whose screen this is, the
+    chrome says the flow arrived. Only text the model proposed can be
+    parameterised, because the loop verified that against the live screen before
+    accepting the run — inventing an assertion nothing was observed to satisfy
+    would fail every replay instead of one.
 
     Returns the condition, the text it asserts, and any notes explaining a
     substitution, so the reason survives into the artifact's provenance rather
@@ -157,25 +178,59 @@ def choose_checkpoint(result: DiscoveryResult) -> tuple[Condition, str, list[str
     """
     notes: list[str] = []
     proposed = result.checkpoint_text.strip()
-    volatile = {v for v in result.parameters.values() if v} | {
-        v for v in result.outputs.values() if v
-    }
+    outputs = {v for v in result.outputs.values() if v}
+    parameters = {name: v for name, v in result.parameters.items() if v}
 
-    if proposed and not any(v in proposed for v in volatile):
-        return TextPresent(text=proposed), proposed, notes
-
-    for candidate in result.checkpoint_candidates:
-        if candidate and not any(v in candidate for v in volatile):
-            notes.append(
-                f"model proposed checkpoint {proposed!r}, which contains a value that "
-                f"varies per invocation; substituted stable screen text {candidate!r}"
-            )
-            return TextPresent(text=candidate), candidate, notes
-
-    raise SynthesisError(
-        f"no stable checkpoint available: the model proposed {proposed!r}, which varies "
-        "per invocation, and no stable text was captured on the success screen"
+    identifying = [
+        TextPresent(text=ParamText(param=slug(name, "param")))
+        for name, value in parameters.items()
+        if value in proposed
+    ]
+    # A literal holding a parameter's value is a single-invocation assertion too;
+    # it is usable only through the reference above.
+    unusable = outputs | set(parameters.values())
+    stable = next(
+        (
+            text
+            for text in (c.strip() for c in (proposed, *result.checkpoint_candidates))
+            if text and not any(v in text for v in unusable)
+        ),
+        None,
     )
+
+    if identifying:
+        named = ", ".join(sorted(p.text.param for p in identifying))
+        if stable is None:
+            notes.append(
+                f"model proposed checkpoint {proposed!r}; asserted as parameter(s) {named}, "
+                "and no other stable text was captured on the success screen"
+            )
+            asserted = identifying
+        else:
+            notes.append(
+                f"model proposed checkpoint {proposed!r}, which contains the value of "
+                f"parameter(s) {named}; asserted by reference so it holds for every "
+                f"invocation, alongside stable screen text {stable!r}"
+            )
+            asserted = [*identifying, TextPresent(text=stable)]
+        return (
+            asserted[0] if len(asserted) == 1 else AllOf(conditions=asserted),
+            stable or f"<{named}>",
+            notes,
+        )
+
+    if stable is None:
+        raise SynthesisError(
+            f"no stable checkpoint available: the model proposed {proposed!r}, which varies "
+            "per invocation, and no stable text was captured on the success screen"
+        )
+
+    if stable != proposed:
+        notes.append(
+            f"model proposed checkpoint {proposed!r}, which contains a value that "
+            f"varies per invocation; substituted stable screen text {stable!r}"
+        )
+    return TextPresent(text=stable), stable, notes
 
 
 def synthesize(
