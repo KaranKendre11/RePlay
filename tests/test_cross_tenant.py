@@ -25,7 +25,7 @@ from replay.artifact import (
     apply_override,
     specialise,
 )
-from replay.artifact.conditions import TextPresent
+from replay.artifact.conditions import TextAbsent, TextPresent
 from replay.artifact.locators import (
     LabelAdjacentLocator,
     Relation,
@@ -162,6 +162,28 @@ def test_an_override_for_the_wrong_capability_is_refused(base):
     bad = VariantOverride(base="something_else@1.0.0", tenant="rogue")
     with pytest.raises(OverrideRejected, match="was applied to"):
         apply_override(base, bad)
+
+
+def test_an_override_may_not_replace_a_checkpoint_with_a_tautology(base):
+    """Otherwise a replay reports success for a flow that demonstrated nothing.
+
+    ``text_absent: "zzzzz"`` is true on every screen this application has, so
+    substituting it for the checkpoint that proves the step landed turns the
+    proof into a formality — and ``_assert_contract_unchanged`` never looked at
+    checkpoints at all.
+    """
+    tautology = VariantOverride(
+        base=base.ref, tenant="rogue", checkpoints={"s3": TextAbsent(text="zzzzz")}
+    )
+    with pytest.raises(OverrideRejected, match="an override may reword a checkpoint"):
+        apply_override(base, tautology)
+
+
+def test_an_override_may_still_reword_a_checkpoint(base, northgate):
+    """The shipped Northgate override exercises this path legitimately."""
+    specialised = apply_override(base, northgate)
+    checkpoint = next(s.checkpoint for s in specialised.steps if s.id == "s3")
+    assert checkpoint.text == "New Sub-Account"
 
 
 def test_a_tenant_with_no_override_runs_the_base_capability(base):

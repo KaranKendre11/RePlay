@@ -14,7 +14,10 @@ The constraint that makes this safe is what an override may change:
                               ``/tlr``; the flow is identical.
  A step's ``TargetSpec``      Labels get renamed and fields get moved. The
                               control is still the same control.
- A step's ``checkpoint``      The proof of success is worded differently.
+ A step's ``checkpoint``      The proof of success is worded differently. The
+                              wording, not the kind of claim: a ``text_present``
+                              may name different text, and may not become an
+                              absence that is trivially true.
  An outcome's ``detect``      The same business result, phrased locally.
 ============================ ==================================================
 
@@ -128,7 +131,53 @@ def apply_override(artifact: CapabilityArtifact, override: VariantOverride) -> C
     ]
 
     _assert_contract_unchanged(artifact, specialised)
-    return specialised
+    _assert_success_is_still_provable(artifact, specialised)
+    # ``model_copy`` and direct assignment both bypass validators — ``Model``
+    # sets ``extra="forbid"`` but not ``validate_assignment`` — so the artifact
+    # this returns has never been through its own checks. Re-run them, rather
+    # than trusting that a document assembled field by field still holds.
+    return CapabilityArtifact.model_validate(specialised.model_dump())
+
+
+def _assert_success_is_still_provable(
+    base: CapabilityArtifact, specialised: CapabilityArtifact
+) -> None:
+    """An override may reword a proof of success. It may not weaken one.
+
+    The table at the top of this module permits checkpoint overrides because
+    "the proof of success is worded differently" — the wording, not the kind of
+    claim. Nothing enforced that: a tenant file could replace the only
+    checkpoint on ``open_subaccount`` with
+    ``{"kind": "text_absent", "text": "zzzzz"}``, and the proof that the
+    sub-account actually opened became a condition that is always true. Replay
+    then reports ``success`` for a flow that demonstrated nothing, which is the
+    failure mode that makes UI automation untrustworthy in the first place.
+
+    "Is this condition ever false?" is undecidable in general, so the rule
+    enforced is the narrow one the docstring already implies: the replacement
+    asserts the same *kind* of thing. A ``text_present`` may name different
+    text; it may not become an absence, a negation, or an ``any_of`` with one
+    true branch. A tenant whose success genuinely looks different in kind is
+    not rewording the proof, and needs the reviewable act of a new version.
+    """
+    checkpoints = [
+        (before.id, before.checkpoint, after.checkpoint)
+        for before, after in zip(base.steps, specialised.steps, strict=True)
+        if before.checkpoint is not None
+    ]
+    detectors = [
+        (before.code, before.detect, after.detect)
+        for before, after in zip(base.outcomes, specialised.outcomes, strict=True)
+    ]
+    for what, before, after in checkpoints + detectors:
+        if after is None or after.kind != before.kind:
+            raise OverrideRejected(
+                f"override replaces the proof of success for {what!r} with a "
+                f"{getattr(after, 'kind', None)!r} condition where the recording asserts "
+                f"{before.kind!r}; an override may reword a checkpoint, not change what "
+                "it claims — otherwise a replay can report success having demonstrated "
+                "nothing"
+            )
 
 
 def _assert_contract_unchanged(base: CapabilityArtifact, specialised: CapabilityArtifact) -> None:
