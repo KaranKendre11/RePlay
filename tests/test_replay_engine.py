@@ -17,11 +17,14 @@ from test_surface_protocol import MarkupSurface, MinimalSurface
 
 from replay.artifact import ArtifactStore
 from replay.artifact.conditions import TextPresent
+from replay.artifact.schema import ParamRef, ParamSpec
 from replay.engine import (
     FailureClass,
     InvalidArguments,
     ReplayExecutor,
+    ReplayResult,
     ReplayStatus,
+    StepReport,
     bind_parameters,
     rebase,
 )
@@ -479,6 +482,78 @@ def test_sensitive_arguments_never_reach_the_evidence(meridian_server, artifact,
     )
     assert "12345" not in written
     assert "«redacted»" in written
+
+
+# ---------- the run survives its own accidents ----------
+
+
+def test_an_unexpected_error_still_leaves_a_result(artifact, tmp_path):
+    """`_finish` ran after the `except` clauses rather than in a `finally`.
+
+    So anything outside `ControlNotHeld` and `SurfaceError` — a raw driver
+    error, a KeyboardInterrupt during a 900-second escalation wait — lost
+    `result.json` entirely and made the run invisible to `reliability`. The
+    error still propagates; it just no longer takes the evidence with it.
+    """
+
+    class Exploding(MinimalSurface):
+        def act(self, *_args, **_kwargs):
+            raise RuntimeError("the driver fell over")
+
+    with (
+        EvidenceRecorder("unexpected-error", root=tmp_path) as recorder,
+        pytest.raises(RuntimeError),
+    ):
+        ReplayExecutor(Exploding(""), artifact, recorder=recorder).run({"member_id": "12345"})
+
+    written = json.loads((recorder.dir / "result.json").read_text())
+    assert written["status"] == "failed"
+    assert written["run_id"] == recorder.run_id
+
+
+def test_a_run_that_reached_a_person_twice_reports_both_handoffs():
+    """`result.escalation` overwrote, so the first operator vanished from the
+    result while staying in the log."""
+    result = ReplayResult(capability="x@1.0.0", run_id="r", status=ReplayStatus.FAILED)
+    result.escalations.append({"resolution": "resumed", "operator_note": "first"})
+    result.escalations.append({"resolution": "aborted", "operator_note": "second"})
+
+    assert [e["operator_note"] for e in result.to_dict()["escalations"]] == ["first", "second"]
+    assert result.escalation["operator_note"] == "second", "the latest is still the headline"
+
+
+def test_a_retried_step_does_not_hide_the_tier_its_first_attempt_needed():
+    """The drift signal REPORT §3 rests on, keyed by step id and so overwritten."""
+    result = ReplayResult(capability="x@1.0.0", run_id="r", status=ReplayStatus.SUCCESS)
+    for tier in (5, 1):
+        result.steps.append(
+            StepReport(step_id="s3", intent="Click.", action="click", ok=True, tier_used=tier)
+        )
+
+    assert result.locator_tiers == {"s3": 5}
+
+
+def test_a_navigate_step_whose_url_is_a_parameter_is_rebased(meridian_server, artifact, tmp_path):
+    """`_value` returned the caller's value before the NAVIGATE branch could
+    rebase it, so a parameterised entry point went to the recorded deployment
+    while every other step went to the one under test."""
+    parameterised = artifact.model_copy(deep=True)
+    parameterised.inputs.append(
+        ParamSpec(name="entry_url", description="Where this deployment lives.", required=True)
+    )
+    parameterised.steps[0] = parameterised.steps[0].model_copy(
+        update={"value": ParamRef(param="entry_url")}
+    )
+
+    with (
+        WebSurface() as surface,
+        EvidenceRecorder("navigate-param", root=tmp_path) as recorder,
+    ):
+        result = ReplayExecutor(
+            surface, parameterised, recorder=recorder, base_url=meridian_server
+        ).run({"member_id": "12345", "entry_url": "http://127.0.0.1:8080/"})
+
+    assert result.status is ReplayStatus.SUCCESS, result.failure
 
 
 # ---------- rebasing ----------

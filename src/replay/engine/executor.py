@@ -44,6 +44,7 @@ from replay.artifact.schema import (
     CapabilityArtifact,
     ParamRef,
     RecoveryAction,
+    RiskClass,
     Step,
     WaitKind,
 )
@@ -308,6 +309,12 @@ class ReplayExecutor:
         own it. Two runs through one recorder share one directory and one
         ``result.json``, so a caller who wants a run apiece builds an executor
         apiece with a recorder apiece — which is what the CLI and the API do.
+
+        Whatever happens, the run is finished and written down. Anything
+        outside ``ControlNotHeld`` and ``SurfaceError`` still propagates — a
+        raw driver error is not something this engine can classify — but it no
+        longer takes ``result.json`` with it, which used to make the run
+        invisible to ``reliability`` as well as unexplained.
         """
         started = time.monotonic()
         self._reads = {}
@@ -323,6 +330,12 @@ class ReplayExecutor:
         self._announce_surface()
 
         try:
+            return self._run(result, arguments or {})
+        finally:
+            self._finish(result, started)
+
+    def _run(self, result: ReplayResult, arguments: dict[str, Any]) -> ReplayResult:
+        try:
             bound = bind_parameters(self.artifact, arguments or {})
         except InvalidArguments as exc:
             result.failure = Failure(
@@ -331,7 +344,6 @@ class ReplayExecutor:
                 expected=f"arguments satisfying {self.artifact.ref}",
                 observed=str(exc),
             )
-            self._finish(result, started)
             return result
 
         self._bound = bound
@@ -372,7 +384,6 @@ class ReplayExecutor:
                 observed=str(refusal),
             )
             self.recorder.event("policy_refused", scope="capability", reason=str(refusal))
-            self._finish(result, started)
             return result
 
         self.recorder.event(
@@ -401,7 +412,6 @@ class ReplayExecutor:
                 observed=f"{type(exc).__name__}: {exc}",
             )
 
-        self._finish(result, started)
         return result
 
     # -- the loop ---------------------------------------------------------
@@ -629,7 +639,7 @@ class ReplayExecutor:
 
         value = self._value(step, bound)
         expect_navigation = any(w.kind is WaitKind.NAVIGATION for w in step.waits)
-        dialog = DialogPolicy.ACCEPT if step.risk.value == "irreversible" else None
+        dialog = DialogPolicy.ACCEPT if step.risk is RiskClass.IRREVERSIBLE else None
 
         outcome = self.surface.act(
             step.action,
@@ -672,15 +682,19 @@ class ReplayExecutor:
     # -- interpretation ---------------------------------------------------
 
     def _value(self, step: Step, bound: dict[str, str]) -> str | None:
-        if isinstance(step.value, ParamRef):
-            return bound.get(step.value.param)
-        if step.action is Action.NAVIGATE and isinstance(step.value, str):
+        value = bound.get(step.value.param) if isinstance(step.value, ParamRef) else step.value
+        if step.action is Action.NAVIGATE and isinstance(value, str):
             # An explicit target wins; otherwise the artifact's entry point,
             # which a tenant override may have replaced. For the base
             # deployment the two are identical and this is a no-op.
+            #
+            # Rebased after the parameter is resolved, not before: a navigate
+            # whose URL comes from the caller returned early here and reached
+            # the recorded deployment while every other step went to the
+            # overridden one.
             base = self.base_url or self.artifact.app.entry_url_pattern
-            return rebase(step.value, base) if base else step.value
-        return step.value
+            return rebase(value, base) if base else value
+        return value
 
     def _resolved(self, condition: Condition) -> Condition:
         """The condition as it applies to *this* invocation."""
@@ -890,7 +904,7 @@ class ReplayExecutor:
             HumanAction(kind=a.get("kind", "?"), label=a.get("label", "")) for a in performed
         ]
         resolved.human_actions.extend(actions)
-        result.escalation = resolved.to_dict()
+        result.escalations.append(resolved.to_dict())
         self.recorder.event("escalation_resolved", **resolved.to_dict())
 
         return resolved.resolution is Resolution.RESUMED

@@ -191,7 +191,18 @@ class ReplayResult:
     steps: list[StepReport] = field(default_factory=list)
     duration_ms: int = 0
     evidence_dir: str = ""
-    escalation: dict[str, Any] | None = None
+    escalations: list[dict[str, Any]] = field(default_factory=list)
+    """Every handoff this run made, in order.
+
+    A single field overwrote, so a run that reached a person twice — blocked
+    on a step, then again on a checkpoint that would not come true — reported
+    only the second one, and the first operator's actions disappeared from the
+    result while remaining in the log."""
+
+    @property
+    def escalation(self) -> dict[str, Any] | None:
+        """The most recent handoff, which is what a caller waiting on one wants."""
+        return self.escalations[-1] if self.escalations else None
 
     @property
     def ok(self) -> bool:
@@ -204,7 +215,18 @@ class ReplayResult:
 
     @property
     def locator_tiers(self) -> dict[str, int]:
-        return {s.step_id: s.tier_used for s in self.steps if s.tier_used is not None}
+        """The tier each step resolved at — the worst one, if it was attempted twice.
+
+        A step retried after a handoff appears twice, and keying by step id
+        meant the retry silently replaced the first attempt. Taking the worst
+        keeps the drift signal: a control that needed tier 5 once needed it,
+        whatever the second attempt managed.
+        """
+        tiers: dict[str, int] = {}
+        for step in self.steps:
+            if step.tier_used is not None:
+                tiers[step.step_id] = max(step.tier_used, tiers.get(step.step_id, 0))
+        return tiers
 
     @property
     def degraded_steps(self) -> list[str]:
@@ -226,6 +248,7 @@ class ReplayResult:
             "duration_ms": self.duration_ms,
             "evidence_dir": self.evidence_dir,
             "escalation": self.escalation,
+            "escalations": list(self.escalations),
             "locator_tiers": self.locator_tiers,
             "degraded_steps": self.degraded_steps,
             "drifting_steps": self.drifting_steps,
