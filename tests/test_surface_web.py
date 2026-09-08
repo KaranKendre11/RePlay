@@ -100,6 +100,22 @@ def test_render_labels_frames_explicitly(surface):
     assert "=== FRAME workframe" in surface.observe(screenshot=False).render()
 
 
+def test_a_mask_that_cannot_be_applied_withholds_the_screenshot(surface):
+    """Regression: an unresolvable mask was skipped and the screenshot taken anyway.
+
+    ``_mask_locators`` swallowed the failure per mask and carried on with a
+    shorter list — no note, no event, an unmasked screenshot in the evidence.
+    Ordinary tenant drift is enough to move a target, and pixels are what no
+    redactor can scrub afterwards.
+    """
+    surface.mask_in_screenshots(spec("Gone", RoleNameLocator(role="textbox", name="Nope")))
+    observation = surface.observe()
+
+    assert observation.screenshot is None
+    assert "withheld" in observation.note and "Gone" in observation.note
+    assert "NOTE:" in observation.render(), "the reason travels with the observation"
+
+
 # ---------- the locator ladder ----------
 
 

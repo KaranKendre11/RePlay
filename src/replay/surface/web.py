@@ -315,17 +315,24 @@ class WebSurface:
         Explicit value masking cannot help here: a screenshot is pixels, and a
         password sitting visibly in a field would be persisted in full by
         evidence that is otherwise carefully redacted.
+
+        "Before any screenshot" is meant literally: if the control cannot be
+        found when the screen is photographed, no photograph is taken. Ordinary
+        tenant drift is enough to move a target, and the alternative was a
+        shorter mask list and an unmasked screenshot written with no note.
         """
         self._masked.append(target)
 
-    def _mask_locators(self) -> list[PWLocator]:
+    def _mask_locators(self) -> tuple[list[PWLocator], list[str]]:
+        """The masks to apply, and the ones that could not be resolved."""
         found: list[PWLocator] = []
+        unresolved: list[str] = []
         for target in self._masked:
             try:
                 found.append(self.resolve(target, timeout_ms=500).handle)
-            except (TargetNotFound, FrameNotFound, PlaywrightError):
-                continue
-        return found
+            except (TargetNotFound, FrameNotFound, PlaywrightError) as exc:
+                unresolved.append(f"{target.description!r} ({type(exc).__name__})")
+        return found, unresolved
 
     def observe(self, *, screenshot: bool = True) -> Observation:
         views: list[FrameView] = []
@@ -337,11 +344,19 @@ class WebSurface:
                 continue
 
         shot: bytes | None = None
+        note: str | None = None
         if screenshot:
-            try:
-                shot = self.page.screenshot(full_page=False, mask=self._mask_locators())
-            except PlaywrightError:
-                shot = None
+            masks, unresolved = self._mask_locators()
+            if unresolved:
+                note = (
+                    "screenshot withheld: could not cover " + ", ".join(unresolved) + "; a "
+                    "screenshot is pixels no redactor can scrub afterwards, so none was taken"
+                )
+            else:
+                try:
+                    shot = self.page.screenshot(full_page=False, mask=masks)
+                except PlaywrightError as exc:
+                    note = f"screenshot failed: {type(exc).__name__}"
 
         return Observation(
             url=self.page.url,
@@ -350,6 +365,7 @@ class WebSurface:
             screenshot=shot,
             http_status=self._last_status,
             dialogs_seen=list(self._dialogs),
+            note=note,
         )
 
     @staticmethod
