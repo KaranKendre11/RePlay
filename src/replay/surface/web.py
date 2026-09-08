@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import time
+from dataclasses import replace
 from typing import Any
 
 from playwright.sync_api import Error as PlaywrightError
@@ -706,10 +707,14 @@ class WebSurface:
             except PolicyRefused as refusal:
                 with contextlib.suppress(PlaywrightError):
                     self.page.goto("about:blank")
-                return self._done(
-                    outcome.action,
-                    False,
-                    resolution=outcome.resolution,
+                # The action's own dialogs are kept; anything it read is not. A
+                # value read off an off-limits page is exactly what must not
+                # travel any further.
+                return replace(
+                    outcome,
+                    ok=False,
+                    read_value=None,
+                    navigated=False,
                     error=str(refusal),
                     note=(
                         "the page had already loaded when this was caught; the session has "
