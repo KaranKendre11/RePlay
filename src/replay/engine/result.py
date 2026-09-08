@@ -84,6 +84,20 @@ class StepReport:
     recovered: list[str] = field(default_factory=list)
     duration_ms: int = 0
     error: str | None = None
+    dialogs: list[str] = field(default_factory=list)
+    """Native dialogs the surface saw and answered while performing this step.
+
+    On an application whose submit is a `confirm()`, a replay that discarded
+    these left no trace anywhere — not in the step report, not in `run.jsonl`,
+    not in `result.json` — that the automation had answered a question the
+    application thought worth asking."""
+
+    note: str | None = None
+    """Something that happened which is not an error but changes what to do next.
+
+    The surface documents this for exactly one case: a click that was expected
+    to navigate and did not, "especially if a confirmation dialog was dismissed
+    on the way through". Discovery consumes it; replay used to drop it."""
 
     @property
     def degraded(self) -> bool:
@@ -120,6 +134,8 @@ class StepReport:
             "recovered": list(self.recovered),
             "duration_ms": self.duration_ms,
             "error": self.error,
+            "dialogs": list(self.dialogs),
+            "note": self.note,
         }
 
 

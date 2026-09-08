@@ -355,6 +355,28 @@ def test_the_read_capability_is_marked_safe():
     assert not artifact.policy.requires_approval
 
 
+def test_a_dialog_the_replay_answered_leaves_a_trace(meridian_server, tmp_path):
+    """The submit on this application is a native `confirm()`.
+
+    `_perform` read `resolution`, `ok`, `error` and `read_value` from the
+    action outcome and nothing else, and `StepReport` had nowhere to put a
+    dialog anyway — so on a *successful* replay the confirmation the automation
+    accepted appeared in no step report, no `run.jsonl` and no `result.json`.
+    """
+    result = replay(
+        meridian_server,
+        tmp_path,
+        None,
+        "write-dialog-trace",
+        capability=CAPABILITY_FOR[Injection.VALIDATION],
+    )
+
+    assert result.status is ReplayStatus.SUCCESS
+    submit = next(s for s in result.steps if s.step_id == "s7")
+    assert submit.dialogs, "the confirmation the automation answered"
+    assert any("dialogs" in s.to_dict() for s in result.steps)
+
+
 def test_the_write_capability_replays_end_to_end(meridian_server, tmp_path):
     result = replay(
         meridian_server,

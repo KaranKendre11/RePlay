@@ -643,6 +643,13 @@ class ReplayExecutor:
         report.ok = outcome.ok
         report.error = outcome.error
         report.duration_ms = int((time.monotonic() - started) * 1000)
+        # Kept even when the step succeeded. A confirmation the automation
+        # answered on the way through is the sort of thing that has to be
+        # visible afterwards on an application whose submit is a native
+        # confirm() — and a click that did not move the page is the note's
+        # motivating case.
+        report.dialogs = list(outcome.dialogs)
+        report.note = outcome.note
 
         if outcome.read_value is not None:
             self._reads[step.id] = outcome.read_value
