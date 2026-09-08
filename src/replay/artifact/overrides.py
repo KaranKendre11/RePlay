@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from replay.artifact.conditions import Condition
 from replay.artifact.schema import (
@@ -248,7 +248,13 @@ class OverrideStore:
         path = self.path_for(tenant, name)
         if not path.exists():
             return None
-        return VariantOverride.model_validate_json(path.read_text())
+        try:
+            return VariantOverride.model_validate_json(path.read_text())
+        except (ValidationError, json.JSONDecodeError, UnicodeDecodeError, OSError) as bad:
+            # An override that will not parse must not surface as a raw pydantic
+            # error out of an HTTP handler. It is the same class of answer as an
+            # override that overreaches: this tenant cannot be specialised.
+            raise OverrideRejected(f"{path} is not a readable override: {bad}") from bad
 
     def save(self, override: VariantOverride, name: str) -> Path:
         path = self.path_for(override.tenant, name)

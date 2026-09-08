@@ -27,11 +27,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from replay.artifact import ArtifactNotFound, ArtifactStore, invocation_schema, specialise
+from replay.artifact import (
+    ArtifactInvalid,
+    ArtifactNotFound,
+    ArtifactStore,
+    invocation_schema,
+    specialise,
+)
 from replay.artifact.overrides import DEFAULT_ROOT as OVERRIDES_ROOT
 from replay.artifact.overrides import OverrideRejected, TenantUnknown
 from replay.artifact.schema import CapabilityArtifact
@@ -66,6 +72,15 @@ class InvokeRequest(BaseModel):
         ),
     )
     escalation_timeout_s: float = Field(default=300.0, gt=0)
+
+
+def _as_json(status: int):
+    """One error shape for every failure the catalog knows how to name."""
+
+    def handler(_request: Request, failure: Exception) -> JSONResponse:
+        return JSONResponse({"error": str(failure)}, status_code=status)
+
+    return handler
 
 
 def summarise(artifact: CapabilityArtifact) -> dict[str, Any]:
@@ -136,35 +151,39 @@ def create_api(
         version="1.0",
     )
 
+    # Registered once, rather than repeated at every endpoint. A per-route
+    # handler list is one somebody forgets on the next route, and that is
+    # exactly what happened: `get_artifact` and `invoke` caught only
+    # `ArtifactNotFound` — raised solely from a `path.exists()` check — so a
+    # file that existed but did not parse came back as a 500 with a traceback,
+    # and the difference between 404 and 500 was an existence oracle for paths
+    # on the host, from an unauthenticated endpoint.
+    for failure, status in (
+        (ArtifactNotFound, 404),
+        (TenantUnknown, 404),
+        (OverrideRejected, 409),
+        (ArtifactInvalid, 500),
+    ):
+        app.add_exception_handler(failure, _as_json(status))
+
     @app.get("/capabilities")
     def list_capabilities() -> JSONResponse:
         return JSONResponse([summarise(a) for a in store.list_all()])
 
     @app.get("/capabilities/{name}")
     def get_capability(name: str, version: str | None = None) -> JSONResponse:
-        try:
-            return JSONResponse(summarise(store.load(name, version)))
-        except ArtifactNotFound as missing:
-            return JSONResponse({"error": str(missing)}, status_code=404)
+        return JSONResponse(summarise(store.load(name, version)))
 
     @app.get("/capabilities/{name}/artifact")
     def get_artifact(name: str, version: str | None = None) -> JSONResponse:
         """The whole capability, for a human reviewer or a diff."""
-        try:
-            artifact = store.load(name, version)
-        except ArtifactNotFound as missing:
-            return JSONResponse({"error": str(missing)}, status_code=404)
+        artifact = store.load(name, version)
         return JSONResponse(artifact.model_dump(mode="json", exclude_none=True))
 
     @app.post("/capabilities/{name}:invoke")
     def invoke(name: str, request: InvokeRequest, version: str | None = None) -> JSONResponse:
         """Run a capability. This is the production path an agent triggers."""
-        try:
-            artifact = specialise(store.load(name, version), request.tenant, root=overrides_dir)
-        except (ArtifactNotFound, TenantUnknown) as missing:
-            return JSONResponse({"error": str(missing)}, status_code=404)
-        except OverrideRejected as rejected:
-            return JSONResponse({"error": str(rejected)}, status_code=409)
+        artifact = specialise(store.load(name, version), request.tenant, root=overrides_dir)
 
         # The declared types, applied. They are published to every calling
         # agent as this capability's contract and nothing enforced them:
@@ -195,18 +214,29 @@ def create_api(
             else None
         )
 
-        with (
-            EvidenceRecorder(run_id, root=evidence_dir) as recorder,
-            WebSurface(headed=headed, allowlist=allowlist) as surface,
-        ):
-            result = ReplayExecutor(
-                surface,
-                artifact,
-                recorder=recorder,
-                base_url=request.target,
-                gate=gate,
-                escalation=handler,
-            ).run(arguments)
+        try:
+            with (
+                EvidenceRecorder(run_id, root=evidence_dir) as recorder,
+                WebSurface(headed=headed, allowlist=allowlist) as surface,
+            ):
+                result = ReplayExecutor(
+                    surface,
+                    artifact,
+                    recorder=recorder,
+                    base_url=request.target,
+                    gate=gate,
+                    escalation=handler,
+                ).run(arguments)
+        except OSError as unrecordable:
+            # `EvidenceRecorder.__init__` refuses a directory that already holds
+            # a run, and can fail on a read-only or full disk. Either way the
+            # answer is to refuse rather than to touch the application anyway: a
+            # run nobody can audit afterwards is worse than a run that did not
+            # happen.
+            return JSONResponse(
+                {"error": f"cannot record this run, so it was not started: {unrecordable}"},
+                status_code=503,
+            )
 
         # 200 for success and for a declared business outcome — both are the
         # capability working. Only a malfunction is an error status.
