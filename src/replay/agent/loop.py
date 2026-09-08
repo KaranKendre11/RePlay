@@ -16,9 +16,10 @@ loop performs one run and refuses a second.
 
 **Failures are fed back, not raised.** A bad index, a call outside the
 vocabulary, an argument of the wrong type, a missed click or a URL the allowlist
-refuses becomes a line in the action log that the model can see and respond to. A run that dies on the first mistake teaches us nothing about whether
-the model can recover, which is exactly what we need to know before trusting it
-to record a capability.
+refuses becomes a line in the action log that the model can see and respond to.
+A run that dies on the first mistake teaches us nothing about whether the model
+can recover, which is exactly what we need to know before trusting it to record
+a capability.
 
 **A stop the model cannot resolve is a question for a person.** Giving up,
 stalling and erroring are the three ways a run ends with the goal unmet and the
@@ -485,6 +486,16 @@ class DiscoveryLoop:
         parameter = call.arg("parameter_name") or None
         output = call.arg("output_name") or None
 
+        # A read that came back with nothing did not do what it was asked, even
+        # though nothing errored: an empty cell recorded as an observed output
+        # makes the artifact advertise a value the run never saw. Failing it
+        # here keeps it out of the contract, out of the synthesised steps, and
+        # in the action log where the model can pick a different cell.
+        ok, error = outcome.ok, outcome.error
+        if ok and action is Action.READ and not (outcome.read_value or "").strip():
+            ok = False
+            error = "read returned no text, so there is no output to record"
+
         recorded = RecordedAction(
             step_id=step_id,
             intent=self._intent(call, candidate),
@@ -497,10 +508,10 @@ class DiscoveryLoop:
             accept_dialog=dialog,
             tier_used=int(outcome.resolution.tier) if outcome.resolution else None,
             read_value=outcome.read_value,
-            ok=outcome.ok,
+            ok=ok,
             navigated=outcome.navigated,
             note=outcome.note,
-            error=outcome.error,
+            error=error,
         )
 
         # A declaration only joins the capability's contract if the action
@@ -508,9 +519,9 @@ class DiscoveryLoop:
         # parameter taken from one becomes a required input that no step
         # consumes: the caller's argument is accepted, silently discarded, and
         # the flow runs against whatever the screen already held.
-        if outcome.ok and parameter and value:
+        if ok and parameter and value:
             result.parameters[parameter] = value
-        if outcome.ok and output and outcome.read_value is not None:
+        if ok and output and outcome.read_value is not None:
             result.outputs[output] = outcome.read_value
 
         summary = f"{call.name} [{candidate.index}] {candidate.describe!r}"
@@ -522,7 +533,7 @@ class DiscoveryLoop:
         # retrying blindly and the model understanding what it just hit.
         if outcome.note:
             summary += f" — NOTE: {outcome.note}"
-        self._record(result, recorded, summary, outcome.ok, outcome.error)
+        self._record(result, recorded, summary, ok, error)
 
     def _candidate(self, call: ToolCall, candidates: list[Candidate]) -> Candidate | None:
         index = call.arg("index")

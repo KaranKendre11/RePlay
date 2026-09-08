@@ -301,9 +301,7 @@ def test_a_bad_index_is_fed_back_rather_than_fatal(surface, recorder, meridian_s
         ToolCall(name="click", arguments={}),
     ],
 )
-def test_a_malformed_call_is_fed_back_rather_than_acted_on(
-    surface, recorder, meridian_server, bad
-):
+def test_a_malformed_call_is_fed_back_rather_than_acted_on(surface, recorder, meridian_server, bad):
     """The model is untrusted input, so its shape is checked before it is used.
 
     Every one of these used to either raise out of the run or be silently
@@ -347,6 +345,30 @@ def test_a_parameter_from_a_failed_action_is_not_in_the_contract(
     typed = next(a for a in result.actions if a.action is Action.TYPE)
     assert not typed.ok, "typing into a table cell does not work"
     assert result.parameters == {}
+
+
+def test_a_read_that_returned_nothing_is_not_declared_as_an_output(
+    surface, recorder, meridian_server
+):
+    """Nothing errored, and nothing was observed.
+
+    Recording it anyway makes the artifact advertise an output the run never saw
+    a value for, and gives the caller an empty string as an answer.
+    """
+    surface.act(Action.NAVIGATE, value=meridian_server)
+    empty = index_of(surface, label="Member ID")
+
+    llm = MockLLM(
+        [
+            ToolCall(name="read_value", arguments={"index": empty, "output_name": "member_name"}),
+            ToolCall(name="finish", arguments={"summary": "Done.", "checkpoint_text": "Member ID"}),
+        ]
+    )
+    result = DiscoveryLoop(surface, llm, recorder, vision=False).run("goal", meridian_server)
+
+    read = next(a for a in result.actions if a.action is Action.READ)
+    assert not read.ok, "a read that saw nothing did not do what it was asked"
+    assert result.outputs == {}
 
 
 def test_repeating_the_same_decision_stops_the_run(surface, recorder, meridian_server):
