@@ -55,6 +55,10 @@ class OverrideRejected(ValueError):
     """The override would change something it is not allowed to change."""
 
 
+class TenantUnknown(OverrideRejected):
+    """A tenant was named that the overrides root has never heard of."""
+
+
 class VariantOverride(BaseModel):
     """Per-tenant deltas against a base capability."""
 
@@ -267,14 +271,35 @@ def specialise(
 ) -> CapabilityArtifact:
     """Load and apply a tenant's override, if one exists.
 
-    A tenant with no override runs the base capability unchanged. That is the
-    good case and should stay the common one — an override is a record of
-    somewhere a deployment diverged, so the fewer of them, the better the base
-    recording was.
+    A *known* tenant with no override for this capability runs the base
+    unchanged. That is the good case and should stay the common one — an
+    override is a record of somewhere a deployment diverged, so the fewer of
+    them, the better the base recording was.
+
+    An unknown tenant is not that case; it is a mistake, and it used to be a
+    silent one. ``--tenant nothgate`` is a typo, and ``replay serve`` started
+    from any directory other than the repo root finds no overrides at all
+    because the default root is relative — both ran the *base* capability
+    against the tenant's deployment while the CLI cheerfully printed
+    ``tenant northgate``. That is the textbook shape of "the operator believes
+    they changed behaviour and nothing happened", and here it means running a
+    recording against a host it was not recorded on.
+
+    A tenant is known by having a directory under the overrides root, so
+    onboarding one is ``mkdir overrides/<tenant>`` and a tenant that genuinely
+    needs no deltas says so by having an empty directory.
     """
     if not tenant:
         return artifact
-    override = OverrideStore(root).load(tenant, artifact.name)
+    store = OverrideStore(root)
+    override = store.load(tenant, artifact.name)
     if override is None:
+        known = store.tenants()
+        if tenant not in known:
+            raise TenantUnknown(
+                f"no tenant {tenant!r} under {store.root}; known tenants are "
+                f"{known or 'none — is the overrides root right?'}. Refusing to run "
+                f"the base {artifact.ref} against a deployment you asked to specialise for"
+            )
         return artifact
     return apply_override(artifact, override)

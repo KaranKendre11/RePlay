@@ -3,6 +3,7 @@
 from replay.artifact.overrides import (
     OverrideRejected,
     OverrideStore,
+    TenantUnknown,
     VariantOverride,
     apply_override,
     specialise,
@@ -50,6 +51,7 @@ __all__ = [
     "Step",
     "SurfaceKind",
     "TargetSpec",
+    "TenantUnknown",
     "VariantOverride",
     "apply_override",
     "invocation_schema",

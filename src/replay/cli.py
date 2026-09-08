@@ -235,6 +235,7 @@ def run_capability(
     This is the path an AI agent triggers in production.
     """
     from replay.artifact import ArtifactNotFound, ArtifactStore, specialise
+    from replay.artifact.overrides import OverrideRejected
     from replay.engine import ReplayExecutor
     from replay.escalation import ConsoleEscalation, InterventionQueue, serve_console
     from replay.evidence import EvidenceRecorder, new_run_id
@@ -251,7 +252,7 @@ def run_capability(
 
     try:
         artifact = specialise(ArtifactStore().load(name, capability_version), tenant)
-    except ArtifactNotFound as exc:
+    except (ArtifactNotFound, OverrideRejected) as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from exc
 
@@ -473,6 +474,9 @@ def serve(
     port: Annotated[int, typer.Option("--port")] = 8000,
     policy_file: Annotated[Path, typer.Option("--policy")] = Path("policy.toml"),
     evidence_dir: Annotated[Path, typer.Option("--evidence-dir")] = Path("runs"),
+    overrides_dir: Annotated[
+        Path, typer.Option("--overrides-dir", help="Where the per-tenant overrides live.")
+    ] = Path("overrides"),
     headed: Annotated[
         bool, typer.Option("--headed", help="Show the browser, so an operator can take over.")
     ] = False,
@@ -489,7 +493,12 @@ def serve(
     typer.secho(f"catalog:  http://{host}:{port}/capabilities", fg=typer.colors.CYAN)
     typer.secho(f"operator: http://{host}:{port}/operator", fg=typer.colors.MAGENTA)
     run_server(
-        host=host, port=port, policy_file=policy_file, evidence_dir=evidence_dir, headed=headed
+        host=host,
+        port=port,
+        policy_file=policy_file,
+        evidence_dir=evidence_dir,
+        overrides_dir=overrides_dir,
+        headed=headed,
     )
 
 

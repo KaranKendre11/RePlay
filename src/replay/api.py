@@ -32,7 +32,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from replay.artifact import ArtifactNotFound, ArtifactStore, invocation_schema, specialise
-from replay.artifact.overrides import OverrideRejected
+from replay.artifact.overrides import DEFAULT_ROOT as OVERRIDES_ROOT
+from replay.artifact.overrides import OverrideRejected, TenantUnknown
 from replay.artifact.schema import CapabilityArtifact
 from replay.engine import ReplayExecutor, ReplayStatus
 from replay.escalation import ConsoleEscalation, InterventionQueue
@@ -115,6 +116,10 @@ def create_api(
     # from agent traffic would both dirty it and move numbers nobody meant to
     # move. A one-shot `replay run` is a deliberate act and still defaults there.
     evidence_dir: Path | str = "runs",
+    # Explicit, because the default is relative to the process's working
+    # directory: a server started anywhere but the repo root silently found no
+    # overrides at all and ran base capabilities against tenant deployments.
+    overrides_dir: Path | str = OVERRIDES_ROOT,
     queue: InterventionQueue | None = None,
     headed: bool = False,
     allowlist: Allowlist | None = None,
@@ -155,8 +160,8 @@ def create_api(
     def invoke(name: str, request: InvokeRequest, version: str | None = None) -> JSONResponse:
         """Run a capability. This is the production path an agent triggers."""
         try:
-            artifact = specialise(store.load(name, version), request.tenant)
-        except ArtifactNotFound as missing:
+            artifact = specialise(store.load(name, version), request.tenant, root=overrides_dir)
+        except (ArtifactNotFound, TenantUnknown) as missing:
             return JSONResponse({"error": str(missing)}, status_code=404)
         except OverrideRejected as rejected:
             return JSONResponse({"error": str(rejected)}, status_code=409)
@@ -220,6 +225,7 @@ def serve(
     artifacts_dir: Path | str = "artifacts",
     policy_file: Path | str = "policy.toml",
     evidence_dir: Path | str = "runs",
+    overrides_dir: Path | str = OVERRIDES_ROOT,
     headed: bool = False,
 ) -> None:
     import uvicorn
@@ -229,6 +235,7 @@ def serve(
             artifacts_dir=artifacts_dir,
             policy_file=policy_file,
             evidence_dir=evidence_dir,
+            overrides_dir=overrides_dir,
             headed=headed,
         ),
         host=host,

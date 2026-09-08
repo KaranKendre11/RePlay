@@ -21,6 +21,7 @@ from replay.artifact import (
     ArtifactStore,
     OverrideRejected,
     OverrideStore,
+    TenantUnknown,
     VariantOverride,
     apply_override,
     specialise,
@@ -186,14 +187,33 @@ def test_an_override_may_still_reword_a_checkpoint(base, northgate):
     assert checkpoint.text == "New Sub-Account"
 
 
-def test_a_tenant_with_no_override_runs_the_base_capability(base):
+def test_a_known_tenant_with_no_override_runs_the_base_capability(base, tmp_path):
     """The good case, and it should stay the common one.
 
     An override records somewhere a deployment diverged; the fewer of them, the
-    better the original recording was.
+    better the original recording was. A tenant says it needs no deltas by
+    having a directory and no file in it.
     """
-    assert specialise(base, "a-tenant-with-no-file", root="overrides") == base
+    (tmp_path / "a-tenant-with-no-file").mkdir()
+    assert specialise(base, "a-tenant-with-no-file", root=tmp_path) == base
     assert specialise(base, None) == base
+
+
+def test_an_unknown_tenant_is_refused_rather_than_silently_ignored(base, tmp_path):
+    """The operator believes they changed behaviour, and nothing happened.
+
+    ``--tenant nothgate`` is a typo and ``replay serve`` started outside the
+    repo root has no overrides directory at all. Both used to run the *base*
+    capability against the tenant's deployment, while the CLI printed
+    ``tenant northgate``.
+    """
+    (tmp_path / "northgate").mkdir()
+
+    with pytest.raises(TenantUnknown, match="nothgate"):
+        specialise(base, "nothgate", root=tmp_path)
+
+    with pytest.raises(TenantUnknown, match="is the overrides root right"):
+        specialise(base, "northgate", root=tmp_path / "wrong-cwd")
 
 
 # ---------- a tenant name is not a path ----------
