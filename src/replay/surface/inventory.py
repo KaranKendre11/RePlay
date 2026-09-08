@@ -204,7 +204,9 @@ class Candidate:
         """One line for the model's observation."""
         bits = [f"[{self.index}] {self.role}"]
         if self.name:
-            bits.append(f'"{self.name}"')
+            # repr, like every other field here: an accessible name is page
+            # content and can carry newlines, which forge prompt sections.
+            bits.append(repr(self.name))
         if self.label and self.label != self.name:
             bits.append(f"label={self.label!r}")
         if self.value:

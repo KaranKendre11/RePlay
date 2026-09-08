@@ -55,6 +55,7 @@ from replay.surface.base import (
     DialogPolicy,
     DiscoverableSurface,
     Observation,
+    SurfaceError,
     require_surface,
 )
 from replay.surface.inventory import Candidate
@@ -756,4 +757,10 @@ class DiscoveryLoop:
 
     def _visible_text(self) -> str:
         observation = self.surface.observe(screenshot=False)
-        return "\n".join(self.surface.text_of(frame.path) for frame in observation.frames)
+        parts = []
+        for frame in observation.frames:
+            try:
+                parts.append(self.surface.text_of(frame.path))
+            except SurfaceError as blind:
+                parts.append(f"(could not read {frame.path or ['(main)']}: {blind})")
+        return "\n".join(parts)
