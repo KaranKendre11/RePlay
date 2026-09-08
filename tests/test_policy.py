@@ -11,6 +11,8 @@ the risk gate inside the executor, so nothing can route around them by calling a
 lower-level method — which is the way this kind of control usually fails.
 """
 
+import json
+
 import pytest
 
 from replay.artifact import ArtifactStore
@@ -221,8 +223,6 @@ def test_the_permitted_capability_still_runs(meridian_server, write_capability, 
 
 def test_the_guardrails_in_force_are_recorded_with_the_run(meridian_server, read_only, tmp_path):
     """So a reviewer can see what the rules were, not just what happened."""
-    import json
-
     with (
         WebSurface(allowlist=PERMISSIVE) as surface,
         EvidenceRecorder("policy-log", root=tmp_path) as recorder,
@@ -317,6 +317,40 @@ def test_masks_can_be_added_after_construction():
     assert REDACTED in redactor.scrub("token s3cret")
     redactor.add(None)
     assert redactor.masks == ["s3cret"]
+
+
+def test_a_number_survives_the_evidence_recorder(tmp_path):
+    """Redaction reads the structure, not the serialized text.
+
+    Scrubbing the JSON text matched the card pattern against unquoted number
+    literals — and epoch-milliseconds is exactly thirteen digits — so the
+    marker went into the middle of a number, the reparse failed, and the
+    exception took the run out through :meth:`event`, leaving the evidence file
+    the recorder exists to produce empty.
+    """
+    with EvidenceRecorder("number-evidence", root=tmp_path) as rec:
+        rec.event("step_finished", step_id="s1", finished_at_ms=1757251200000)
+
+    event = json.loads((rec.dir / "run.jsonl").read_text().splitlines()[0])
+    assert event["finished_at_ms"] == 1757251200000
+
+
+def test_a_mask_needing_json_escaping_still_never_reaches_the_evidence(tmp_path):
+    """The other half of the same bug.
+
+    A mask is matched literally. Against escaped text a secret holding a quote,
+    a backslash or a newline exists only as ``pa\\"ss``, so the replace never
+    fired and the secret was written out in full.
+    """
+    secret = 'pa"ss word / back\\slash / two\nlines'
+    with EvidenceRecorder("escaped-secret", root=tmp_path, mask=[secret]) as rec:
+        rec.event("observed", screen=f"user typed {secret}", nested={"a": [{"b": secret}]})
+        rec.result({secret: secret})
+
+    written = "\n".join(p.read_text() for p in rec.dir.rglob("*") if p.is_file())
+    for fragment in ('pa\\"ss word', "back\\\\slash", "two\\nlines"):
+        assert fragment not in written
+    assert REDACTED in written
 
 
 def test_a_sensitive_field_is_covered_in_screenshots(meridian_server, read_only, tmp_path):

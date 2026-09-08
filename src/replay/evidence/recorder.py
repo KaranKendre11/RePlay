@@ -74,8 +74,33 @@ class EvidenceRecorder:
         self.redactor.add(value)
 
     def redact(self, payload: Any) -> Any:
-        text = json.dumps(payload, ensure_ascii=False, default=str)
-        return json.loads(self.redactor.scrub(text))
+        """Scrub the string leaves of a structure, not its serialization.
+
+        Scrubbing the serialized JSON *text* failed in both directions at once.
+        It destroyed evidence: the card pattern matches an unquoted number
+        literal, and epoch-milliseconds is exactly thirteen digits, so
+        substituting the marker produced invalid JSON and the reparse raised
+        out of :meth:`event` — taking the run, and the empty ``run.jsonl`` it
+        was meant to write, with it. And it leaked: masks are matched
+        literally, so any secret containing a quote, a backslash, a newline or
+        a tab existed in the text only in escaped form, never matched, and was
+        written verbatim.
+
+        Walking the structure fixes both. Keys are scrubbed as well as values,
+        because a mask can name a field as easily as a value, and numbers,
+        booleans and nulls pass through untouched — a number cannot hold a
+        secret we were handed, and pretending otherwise is what broke the log.
+        """
+        if isinstance(payload, str):
+            return self.redactor.scrub(payload)
+        if isinstance(payload, dict):
+            return {self.redact(str(k)): self.redact(v) for k, v in payload.items()}
+        if isinstance(payload, list | tuple):
+            return [self.redact(item) for item in payload]
+        if payload is None or isinstance(payload, bool | int | float):
+            return payload
+        # Whatever ``default=str`` used to catch on the way to JSON.
+        return self.redactor.scrub(str(payload))
 
     # -- writing ----------------------------------------------------------
 
