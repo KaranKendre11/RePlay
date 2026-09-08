@@ -385,6 +385,21 @@ class ReplayExecutor:
                 # and it gets the same answer as every other step.
                 report = self._operator_performed(step)
                 result.steps.append(report)
+                if step.checkpoint is None:
+                    # Nothing to check their work against. Carrying on would
+                    # report an account opened on an operator's say-so, which is
+                    # the one claim this engine does not accept from anybody.
+                    result.failure = Failure(
+                        step_id=step.id,
+                        failure_class=FailureClass.CHECKPOINT_UNMET,
+                        expected=f"a checkpoint on {step.id}, the step the operator performed",
+                        observed=(
+                            "the operator reported the step done and the capability declares "
+                            "nothing that would show it, so the automation cannot confirm it"
+                        ),
+                        evidence=self._capture(step.id),
+                    )
+                    return
                 self._settle_after_handoff(step)
                 if not self._after_step(result, step, report):
                     return
@@ -505,8 +520,8 @@ class ReplayExecutor:
         short for the slow one.
         """
         if step.checkpoint is None:
-            # Nothing is expected, so there is nothing to wait for. Spending
-            # the budget here would tax every blocked step for no signal.
+            # Unreachable from the handoff path, which refuses a step it cannot
+            # verify before it gets here, and a no-op for any other caller.
             return
 
         deadline = time.monotonic() + self.step_timeout_ms / 1000
@@ -526,6 +541,13 @@ class ReplayExecutor:
         done; the checkpoint that follows is what decides whether it was. It is
         also where any recovery applied while verifying their work is written
         down, which would otherwise have nowhere to go.
+
+        Which means a step carrying no checkpoint cannot be handed off at all:
+        ``ok`` here is unconditional, so with nothing to assert afterwards the
+        run would report success having verified nothing. The schema requires a
+        checkpoint *somewhere* in the capability, which is not the same as one
+        on the step a person performed — ``open_subaccount`` satisfies both only
+        because s7 happens to carry it.
         """
         return StepReport(step_id=step.id, intent=step.intent, action=step.action.value, ok=True)
 

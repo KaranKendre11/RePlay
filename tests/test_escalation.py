@@ -341,6 +341,49 @@ def test_a_checkpoint_that_will_not_come_true_reaches_a_person(meridian_server, 
     assert result.failure.failure_class is FailureClass.CHECKPOINT_UNMET
 
 
+def test_a_step_with_nothing_to_verify_it_is_not_completed_by_a_handoff(
+    meridian_server, write_capability, tmp_path
+):
+    """ "I have handled it" is a claim about the operator, not the application.
+
+    `_operator_performed` returns ok unconditionally and `_settle_after_handoff`
+    returns immediately with no checkpoint, so a blocked step carrying none was
+    reported `success` on an operator's say-so alone — an account opened
+    because someone said they opened it. The schema only requires a checkpoint
+    *somewhere*, so this is permitted; the shipped capability is safe by
+    accident, because s7 happens to carry one.
+    """
+    unverifiable = write_capability.model_copy(deep=True)
+    submit = next(i for i, s in enumerate(unverifiable.steps) if s.id == "s7")
+    unverifiable.steps[submit] = unverifiable.steps[submit].model_copy(update={"checkpoint": None})
+
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-unverifiable", root=tmp_path) as recorder,
+    ):
+
+        def operator_submits(_request):
+            surface.answer_next_dialog(DialogPolicy.ACCEPT)
+            frame = surface.frame_for(["workframe"])
+            frame.get_by_role("button", name="Submit").click()
+            frame.wait_for_load_state("load")
+
+        result = ReplayExecutor(
+            surface,
+            unverifiable,
+            recorder=recorder,
+            base_url=meridian_server,
+            gate=RiskGate(allow_risky=True),
+            escalation=ScriptedOperator(operator_submits),
+        ).run({"member_id": "12345", "product_code": "S02", "opening_deposit": "50.00"})
+
+    assert result.escalation["resolution"] == "resumed"
+    assert result.status is ReplayStatus.FAILED, "nothing verified the operator's work"
+    assert result.failure.step_id == "s7"
+    assert "checkpoint" in result.failure.expected
+    assert not result.outputs
+
+
 def test_a_business_outcome_the_operator_ran_into_reaches_the_caller(
     meridian_server, write_capability, tmp_path
 ):
