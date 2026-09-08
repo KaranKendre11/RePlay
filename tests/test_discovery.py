@@ -332,6 +332,22 @@ def test_giving_up_is_flagged_for_a_human(surface, recorder, meridian_server):
     assert result.reason == "the screen is blocked"
 
 
+def test_a_loop_will_not_run_twice(surface, recorder, meridian_server):
+    """Per-run state is per run.
+
+    The action log, the stall counter and the recorder all live on the instance,
+    so a second run would prompt the model with run A's actions — and any PII in
+    them — start run B three-quarters of the way to a stall, and overwrite run
+    A's result.json under run A's id.
+    """
+    llm = MockLLM([ToolCall(name="give_up", arguments={"reason": "enough"})] * 2)
+    loop = DiscoveryLoop(surface, llm, recorder, vision=False)
+    loop.run("goal A: look up member 12345", meridian_server)
+
+    with pytest.raises(RuntimeError, match="already run"):
+        loop.run("goal B: something else entirely", meridian_server)
+
+
 def test_an_unexpected_crash_still_writes_the_run_record(surface, recorder, meridian_server):
     """A run that performed real actions and then hit a bug is still a run.
 

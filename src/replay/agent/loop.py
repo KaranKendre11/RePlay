@@ -10,7 +10,9 @@ Three choices are worth defending.
 log of actions taken, and the current screen. State lives in the action log, not
 in a growing message history. That keeps token use flat over a long run, removes
 a whole class of tool-call pairing bugs, and — more usefully — means the loop
-behaves the same on turn 20 as on turn 2.
+behaves the same on turn 20 as on turn 2. That flatness is within a run: the
+action log is instance state, bound to one goal and one evidence directory, so a
+loop performs one run and refuses a second.
 
 **Failures are fed back, not raised.** A bad index, a call outside the
 vocabulary, an argument of the wrong type, a missed click or a URL the allowlist
@@ -247,10 +249,24 @@ class DiscoveryLoop:
 
         self._history: list[str] = []
         self._recent: list[str] = []
+        self._started = False
 
     # -- public -----------------------------------------------------------
 
     def run(self, goal: str, target: str) -> DiscoveryResult:
+        # One loop, one run. The action log, the stall counter and the recorder
+        # are all per-run state held on the instance, and a second run would
+        # inherit all three: run B's model would be shown actions it never took
+        # against a different goal, run B could be declared stalled on its first
+        # decision, and both results would be written into one evidence
+        # directory under run A's id. Building another loop costs nothing.
+        if self._started:
+            raise RuntimeError(
+                "this DiscoveryLoop has already run; build a new one, with its own "
+                "recorder, for another goal"
+            )
+        self._started = True
+
         result = DiscoveryResult(
             run_id=self.recorder.run_id,
             goal=goal,
