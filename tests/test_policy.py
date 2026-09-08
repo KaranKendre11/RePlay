@@ -295,7 +295,9 @@ def test_the_guardrails_in_force_are_recorded_with_the_run(meridian_server, read
 @pytest.mark.parametrize(
     ("raw", "shape"),
     [
-        ("card 4111 1111 1111 1111 on file", "card"),
+        ("card 4111 1111 1111 1111 on file", "account"),
+        ("account 0004421187 balance 4,211.03", "account"),
+        ("padded 00044211870000442118", "account"),
         ("ssn 123-45-6789", "ssn"),
         ("token sk-abcdefghijklmnopqrstuvwx", "bearer"),
         ("mail a.person@example.com", "email"),
@@ -312,13 +314,25 @@ def test_regulated_shapes_are_scrubbed_wherever_they_appear(raw, shape):
     assert shape in Redactor().findings(raw)
 
 
-def test_identifiers_are_deliberately_not_redacted():
+@pytest.mark.parametrize(
+    "harmless",
+    [
+        "member 12345 branch 0042",
+        # Three of the shipped app's actual members, side by side. Fifteen
+        # digits with spaces between them, which a rule counting digits across
+        # separators collapsed into one «redacted».
+        "12345 67890 24680",
+        "balance 4,211.03",
+    ],
+)
+def test_identifiers_are_deliberately_not_redacted(harmless):
     """A member ID is the caller's argument, not a secret.
 
     A redactor that eats every identifier makes debugging impossible while
     protecting nothing.
     """
-    assert Redactor().scrub("member 12345 branch 0042") == "member 12345 branch 0042"
+    assert Redactor().scrub(harmless) == harmless
+    assert Redactor().findings(harmless) == []
 
 
 @pytest.mark.parametrize(
