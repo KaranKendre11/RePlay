@@ -267,10 +267,20 @@ class DiscoveryLoop:
             escalation_available=not isinstance(self.escalation, NoEscalation),
         )
 
-        self._explore(goal, target, result)
-
-        self.recorder.event("run_finished", status=result.status.value, reason=result.reason)
-        self.recorder.result(result.to_dict())
+        try:
+            self._explore(goal, target, result)
+        except Exception as exc:
+            # A crash anywhere below here is still a run that opened the target
+            # and may already have changed something on the far side. It ends
+            # like every other stop — an ERROR status, a reason, and a written
+            # record — rather than as a traceback that loses the only account of
+            # what was done.
+            result.status = StopReason.ERROR
+            result.reason = f"unexpected {type(exc).__name__}: {exc}"
+            self.recorder.event("run_crashed", error=result.reason)
+        finally:
+            self.recorder.event("run_finished", status=result.status.value, reason=result.reason)
+            self.recorder.result(result.to_dict())
         return result
 
     # -- the loop ---------------------------------------------------------
@@ -278,9 +288,12 @@ class DiscoveryLoop:
     def _explore(self, goal: str, target: str, result: DiscoveryResult) -> None:
         """Open the target and take turns until something ends the run.
 
-        Split out from :meth:`run` so that every way of stopping — including the
-        entry point being refused — still writes the same evidence on the way
-        out. A stop that skips the record is a stop nobody can review.
+        Split out from :meth:`run`, and called inside its ``try``/``finally``, so
+        that every way of stopping — the entry point being refused, a budget, a
+        stop the model chose, or an exception nobody predicted — still writes the
+        same evidence on the way out. A stop that skips the record is a stop
+        nobody can review. Returning is therefore the normal way to end here;
+        raising is handled, not relied on.
         """
         opening = self.surface.act(Action.NAVIGATE, value=target)
         result.actions.append(

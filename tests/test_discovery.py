@@ -50,6 +50,29 @@ def recorder(tmp_path):
         yield r
 
 
+class HostileLLM:
+    """A client that misbehaves in ways the loop has to survive.
+
+    ``MockLLM`` is a well-behaved model. These tests need the other kind: one
+    that raises something the loop never anticipated, or returns a tool call
+    that is not in the vocabulary at all.
+    """
+
+    name = "hostile"
+
+    def __init__(self, *, raises: Exception | None = None, script=()) -> None:
+        self.raises = raises
+        self._script = list(script)
+        self._position = 0
+
+    def next_action(self, system, messages, tools) -> ToolCall:
+        if self.raises is not None:
+            raise self.raises
+        call = self._script[self._position]
+        self._position += 1
+        return call
+
+
 def index_of(surface, *, label=None, name=None, text=None) -> int:
     """Find a candidate the way the model would: by what is on screen."""
     for candidate in surface.inventory():
@@ -257,6 +280,22 @@ def test_giving_up_is_flagged_for_a_human(surface, recorder, meridian_server):
     assert result.status is StopReason.GAVE_UP
     assert result.status.needs_human
     assert result.reason == "the screen is blocked"
+
+
+def test_an_unexpected_crash_still_writes_the_run_record(surface, recorder, meridian_server):
+    """A run that performed real actions and then hit a bug is still a run.
+
+    Losing it to a traceback leaves the browser mid-flow with no result.json, so
+    nobody can review what was done and `replay synthesize` cannot recover it.
+    """
+    llm = HostileLLM(raises=RuntimeError("Frame was detached"))
+    result = DiscoveryLoop(surface, llm, recorder, vision=False).run("goal", meridian_server)
+
+    assert result.status is StopReason.ERROR
+    assert "RuntimeError: Frame was detached" in result.reason
+    assert (recorder.dir / "result.json").exists(), "the record survived the crash"
+    events = [json.loads(line) for line in (recorder.dir / "run.jsonl").read_text().splitlines()]
+    assert any(e["kind"] == "run_finished" for e in events)
 
 
 # ---------- evidence ----------
