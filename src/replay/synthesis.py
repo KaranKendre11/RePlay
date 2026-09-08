@@ -65,11 +65,32 @@ from replay.artifact.schema import (
     WaitSpec,
 )
 
-#: Actions that change state on the far side. Everything else is a read.
-MUTATING = {Action.CLICK, Action.SELECT, Action.TYPE, Action.PRESS}
-
 #: A click that answers a confirmation is, by construction, committing something.
 IRREVERSIBLE_HINT = "accept_dialog"
+
+#: Words a back-office application puts on a control that commits something.
+#: Matched whole, against the control's own description, and deliberately short
+#: - every entry here is a claim that a control called this is never merely
+#: navigation.
+COMMITTING = frozenset(
+    {
+        "submit",
+        "confirm",
+        "post",
+        "commit",
+        "approve",
+        "authorise",
+        "authorize",
+        "transfer",
+        "pay",
+        "delete",
+        "remove",
+        "void",
+        "reverse",
+    }
+)
+
+WORDS = re.compile(r"[a-z]+")
 
 MONEY = re.compile(r"^-?[\d,]+\.\d{2}$")
 IDENTIFIER = re.compile(r"[^a-z0-9_]+")
@@ -141,14 +162,29 @@ def classify_risk(action: RecordedAction) -> RiskClass:
     dialog is committing something the application thought worth asking about,
     so it is treated as irreversible rather than merely risky — and irreversible
     steps are blocked by default until a human approves them (M8).
+
+    An application that commits *without* asking is the case this has to catch
+    on its own, and it used to catch nothing: the RISKY branch required
+    ``parameter_name``, which the ``click`` tool the model is given cannot set,
+    so every real click came out ``safe``, ``requires_approval=False``, and
+    unattended. The remaining signal is what the control calls itself, so that
+    is what is read. A heuristic, and named as one — a Submit button labelled
+    "Go" is classified ``safe`` and a reviewer has to catch it. It errs towards
+    more supervision rather than less, which is the direction to be wrong in.
+
+    Typing, selecting and pressing commit nothing on their own: they fill a
+    form in, and something else sends it.
     """
     if action.accept_dialog:
         return RiskClass.IRREVERSIBLE
-    if action.action is Action.CLICK and action.expect_navigation:
-        return RiskClass.RISKY if action.parameter_name else RiskClass.SAFE
-    if action.action in MUTATING and action.action is not Action.CLICK:
-        return RiskClass.SAFE  # typing into a field commits nothing on its own
+    if action.action is Action.CLICK and _commits(action):
+        return RiskClass.RISKY
     return RiskClass.SAFE
+
+
+def _commits(action: RecordedAction) -> bool:
+    described = action.target.description if action.target else ""
+    return bool(COMMITTING & set(WORDS.findall(described.lower())))
 
 
 def choose_checkpoint(result: DiscoveryResult) -> tuple[Condition, str, list[str]]:
@@ -267,6 +303,8 @@ def synthesize(
         if spec.pattern
     )
     steps, outputs = _steps_and_outputs(successful, result, checkpoint, recoveries or [])
+    _refuse_collisions("input", [spec.name for spec in inputs])
+    _refuse_collisions("output", [spec.name for spec in outputs])
 
     max_risk = max(
         (s.risk for s in steps),
@@ -320,12 +358,17 @@ def prune_ineffective(actions: list[RecordedAction]) -> list[RecordedAction]:
     would reasonably wonder why.
 
     The rule is narrow on purpose: only a click that expected to navigate, did
-    not, and is superseded by a later action on the same control. A click that
+    not, and is superseded by a later click on the same control. A click that
     merely expands a panel navigates nothing and is kept.
+
+    "The same control" means the same target — description, frame path and
+    locator ladder — not merely the same name. Two controls sharing a name is
+    the norm rather than the exception on an application with a nav frame and a
+    work frame, and matching on the description alone deleted a click that had
+    loaded the results and merely reported ``navigated=False``: four actions
+    performed, three in the artifact, the submit gone, so the capability typed
+    the member id and never sent it.
     """
-    # One entry per action, so positions line up with the enumerate below.
-    # Filtering here instead silently shifts every index.
-    descriptions = [a.target.description if a.target else None for a in actions]
     kept: list[RecordedAction] = []
     for position, action in enumerate(actions):
         superseded = (
@@ -333,11 +376,32 @@ def prune_ineffective(actions: list[RecordedAction]) -> list[RecordedAction]:
             and action.expect_navigation
             and not action.navigated
             and action.target is not None
-            and action.target.description in descriptions[position + 1 :]
+            and any(
+                later.action is Action.CLICK and later.target == action.target
+                for later in actions[position + 1 :]
+            )
         )
         if not superseded:
             kept.append(action)
     return _renumber(kept)
+
+
+def _refuse_collisions(kind: str, names: list[str]) -> None:
+    """Two distinct fields must not collapse into one name.
+
+    ``slug`` is lossy — "Member ID" and "member-id" reduce to the same
+    identifier — and nothing downstream notices. Two inputs would bind to one
+    parameter, so the second field is filled with the first one's value; two
+    outputs would collide in the executor's ``_extract_outputs``, where the
+    last read silently wins and a declared output disappears. Both go wrong
+    quietly, which is the reason to refuse loudly here instead.
+    """
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise SynthesisError(
+            f"two or more {kind}s reduce to the same name {duplicates}; they must be "
+            "distinguishable in the artifact's contract before it can be synthesised"
+        )
 
 
 def _renumber(actions: list[RecordedAction]) -> list[RecordedAction]:
@@ -422,8 +486,26 @@ def _step_value(action: RecordedAction) -> str | ParamRef | None:
 
 
 def _last_navigating_step(actions: list[RecordedAction]) -> str | None:
-    navigating = [a.step_id for a in actions if a.expect_navigation or a.action is Action.NAVIGATE]
-    return navigating[-1] if navigating else None
+    """The last step that changed the screen, which is where the flow arrives.
+
+    What happened is preferred to what was intended: ``navigated`` is what the
+    surface saw, ``expect_navigation`` only what was asked for before the click.
+
+    The opening navigate is not a candidate. It was, and on a frameset
+    application — where clicks routinely report ``navigated=False`` — it was
+    frequently the *only* one, so the checkpoint and every recovery rule
+    attached to the entry-URL load. That asserts the application is up and
+    nothing else, on the one step of the flow that cannot have gone wrong yet.
+    """
+    moved = [a.step_id for a in actions if a.navigated]
+    if moved:
+        return moved[-1]
+    intended = [
+        a.step_id
+        for position, a in enumerate(actions)
+        if a.expect_navigation and not (position == 0 and a.action is Action.NAVIGATE)
+    ]
+    return intended[-1] if intended else None
 
 
 def declare_interstitial(

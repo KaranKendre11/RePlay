@@ -179,8 +179,10 @@ evidence, including the one shown to an operator being asked to take over. Test 
 
 **Limits.** The allowlist is host-and-path based, so it cannot distinguish a legitimate
 `POST /member/12345/subaccount` from a malicious one. Risk is classified at record time from
-observable signals — a step answering a confirmation dialog is treated as irreversible — a good
-heuristic, not a guarantee: an application that commits without asking would be classified `risky`.
+observable signals — a step answering a confirmation dialog is treated as irreversible, and a click
+on a control that names itself a commit ("Submit", "Post", "Transfer", "Approve") is `risky` even
+when the application asks nothing. Both are heuristics, not guarantees: a submit button labelled
+"Go" is classified `safe` and only a reviewer catches it.
 The redaction patterns are narrow and will miss institution-specific formats. And nothing defends
 against a *compromised artifact*: an approved capability is trusted, so artifact review is a real
 control, which is why the schema works so hard to keep them readable.
