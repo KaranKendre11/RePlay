@@ -235,11 +235,12 @@ class ReplayExecutor:
         self.base_url = base_url
         self.step_timeout_ms = step_timeout_ms
         self.recorder = recorder or EvidenceRecorder(new_run_id("replay"))
+        # Per-run state, declared here and reset by :meth:`run`. The caller's
+        # arguments are kept because conditions are resolved against them, so a
+        # checkpoint can assert the record that was asked about rather than
+        # only the shape of the screen.
         self._reads: dict[str, str] = {}
         self._captures = 0
-        # The caller's arguments for the run in progress. Conditions are
-        # resolved against these, so a checkpoint can assert the record that was
-        # asked about rather than only the shape of the screen.
         self._bound: dict[str, str] = {}
         # Default-deny: without an explicit gate, only safe capabilities run.
         self.gate = gate or RiskGate()
@@ -250,7 +251,24 @@ class ReplayExecutor:
     # -- entry point ------------------------------------------------------
 
     def run(self, arguments: dict[str, Any] | None = None) -> ReplayResult:
+        """Replay the capability once.
+
+        An executor may be called more than once — determinism is only
+        measurable by doing so — so everything a run accumulates is reset here
+        rather than in ``__init__``. It was initialised there and never
+        cleared, which meant a read step that produced no value silently
+        inherited the previous invocation's: member 22222's result carried
+        member 11111's balance, reported as ``success``.
+
+        The evidence recorder is *not* reset, because this executor does not
+        own it. Two runs through one recorder share one directory and one
+        ``result.json``, so a caller who wants a run apiece builds an executor
+        apiece with a recorder apiece — which is what the CLI and the API do.
+        """
         started = time.monotonic()
+        self._reads = {}
+        self._captures = 0
+        self._bound = {}
         result = ReplayResult(
             capability=self.artifact.ref,
             run_id=self.recorder.run_id,

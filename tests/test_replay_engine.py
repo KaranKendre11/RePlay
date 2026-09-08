@@ -144,6 +144,33 @@ def test_a_declared_output_that_never_appeared_is_not_a_success(artifact, tmp_pa
     assert result.failure.step_id == "s4"
 
 
+def test_a_reused_executor_never_carries_a_previous_runs_output(artifact, tmp_path):
+    """`run` twice, and the second answer was partly the first one.
+
+    `_reads` was initialised in `__init__` and never cleared, so a read step
+    that produced no value inherited whatever the last invocation had left
+    there — member 22222's result carrying member 11111's balance, reported as
+    a success. Reuse is the supported way to measure determinism, so the state
+    resets rather than the reuse being refused.
+    """
+
+    class Screens(MinimalSurface):
+        def show(self, screen: str, read: str | None) -> None:
+            self._screen, self._read = screen, read
+
+    surface = Screens("MEMBER 11111\nOpen Sub-Account", read="1,000.00")
+
+    with EvidenceRecorder("reused-executor", root=tmp_path) as recorder:
+        executor = ReplayExecutor(surface, artifact, recorder=recorder)
+        first = executor.run({"member_id": "11111"})
+        surface.show("MEMBER 22222\nOpen Sub-Account", read=None)
+        second = executor.run({"member_id": "22222"})
+
+    assert first.outputs == {"current_savings_balance": "1,000.00"}
+    assert second.outputs == {}, "11111's balance must not be 22222's answer"
+    assert second.status is ReplayStatus.FAILED
+
+
 def test_a_checkpoint_may_name_an_argument_the_caller_supplied(artifact):
     """The shipped capability ties its checkpoint to the member that was asked for.
 
