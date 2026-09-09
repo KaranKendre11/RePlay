@@ -203,10 +203,18 @@ def choose_checkpoint(result: DiscoveryResult) -> tuple[Condition, str, list[str
 
     So a parameter is preferred rather than refused, and paired with stable
     screen text where there is any: the parameter says whose screen this is, the
-    chrome says the flow arrived. Only text the model proposed can be
-    parameterised, because the loop verified that against the live screen before
-    accepting the run — inventing an assertion nothing was observed to satisfy
-    would fail every replay instead of one.
+    chrome says the flow arrived. The value still has to have been *seen* —
+    inventing an assertion nothing was observed to satisfy would fail every
+    replay instead of one — but the proposal is no longer the only place it may
+    have been seen. The loop verified the proposal against the live screen and
+    read the candidates off that same screen, so either is evidence the value
+    was there, and the strongest checkpoint available should not depend on the
+    model having volunteered it.
+
+    Which candidate carries which parameter is not recorded separately: it is
+    the same substring test that attributes a value in the proposal, against the
+    same ``result.parameters`` mapping, so a second copy could only disagree
+    with this one.
 
     Returns the condition, the text it asserts, and any notes explaining a
     substitution, so the reason survives into the artifact's provenance rather
@@ -217,38 +225,33 @@ def choose_checkpoint(result: DiscoveryResult) -> tuple[Condition, str, list[str
     outputs = {v for v in result.outputs.values() if v}
     parameters = {name: v for name, v in result.parameters.items() if v}
 
+    observed = [proposed, *(c.strip() for c in result.checkpoint_candidates)]
     identifying = [
         TextPresent(text=ParamText(param=slug(name, "param")))
         for name, value in parameters.items()
-        if value in proposed
+        if any(value in text for text in observed)
     ]
     # A literal holding a parameter's value is a single-invocation assertion too;
     # it is usable only through the reference above.
     unusable = outputs | set(parameters.values())
     stable = next(
-        (
-            text
-            for text in (c.strip() for c in (proposed, *result.checkpoint_candidates))
-            if text and not any(v in text for v in unusable)
-        ),
+        (text for text in observed if text and not any(v in text for v in unusable)),
         None,
     )
 
     if identifying:
         named = ", ".join(sorted(p.text.param for p in identifying))
-        if stable is None:
-            notes.append(
-                f"model proposed checkpoint {proposed!r}; asserted as parameter(s) {named}, "
-                "and no other stable text was captured on the success screen"
-            )
-            asserted = identifying
-        else:
-            notes.append(
-                f"model proposed checkpoint {proposed!r}, which contains the value of "
-                f"parameter(s) {named}; asserted by reference so it holds for every "
-                f"invocation, alongside stable screen text {stable!r}"
-            )
-            asserted = [*identifying, TextPresent(text=stable)]
+        alongside = (
+            f"alongside stable screen text {stable!r}"
+            if stable is not None
+            else "and no other stable text was captured"
+        )
+        notes.append(
+            f"model proposed checkpoint {proposed!r}; the success screen showed the value "
+            f"of parameter(s) {named}, asserted by reference so the checkpoint holds for "
+            f"every invocation rather than this one, {alongside}"
+        )
+        asserted = identifying if stable is None else [*identifying, TextPresent(text=stable)]
         return (
             asserted[0] if len(asserted) == 1 else AllOf(conditions=asserted),
             stable or f"<{named}>",

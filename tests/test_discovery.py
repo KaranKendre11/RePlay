@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from replay.agent import DiscoveryLoop, MockLLM, StopReason, ToolCall
 from replay.agent.prompt import render_observation
+from replay.artifact.conditions import TextPresent, parameters_in
 from replay.artifact.schema import Action
 from replay.cli import app
 from replay.escalation import InterventionReason, Resolution, ScriptedOperator
@@ -22,6 +23,7 @@ from replay.policy import Allowlist
 from replay.surface import Controller, WebSurface
 from replay.surface.base import Observation
 from replay.surface.inventory import Candidate, build_ladder, role_of
+from replay.synthesis import synthesize
 
 WORK = ["workframe"]
 
@@ -518,6 +520,44 @@ def test_a_stable_checkpoint_raises_no_warning(surface, recorder, meridian_serve
     )
     result = DiscoveryLoop(surface, llm, recorder, vision=False).run("goal", meridian_server)
     assert result.warnings == []
+
+
+def test_the_member_id_is_asserted_even_when_the_model_did_not_propose_it(
+    surface, recorder, meridian_server
+):
+    """The strongest checkpoint should not depend on the model volunteering it.
+
+    The member id is on the success screen whatever the model says about it.
+    Here the model proposes generic chrome — "Current Balance", which is true on
+    every member's page — and the id was filtered out of the candidates before
+    synthesis could ever see it, so the capability shipped asserting that *a*
+    member's screen had loaded and nothing about whose.
+    """
+    surface.act(Action.NAVIGATE, value=meridian_server)
+    field = index_of(surface, label="Member ID")
+    button = index_of(surface, name="Search")
+
+    llm = MockLLM(
+        [
+            ToolCall(
+                name="type_text",
+                arguments={"index": field, "text": "12345", "parameter_name": "member_id"},
+            ),
+            ToolCall(name="click", arguments={"index": button, "expect_navigation": True}),
+            ToolCall(
+                name="finish", arguments={"summary": "Done.", "checkpoint_text": "Current Balance"}
+            ),
+        ]
+    )
+    result = DiscoveryLoop(surface, llm, recorder, vision=False).run("goal", meridian_server)
+    assert "12345" not in result.checkpoint_text, "the model proposed chrome, not the id"
+
+    artifact = synthesize(result, name="lookup_balance").artifact
+    checkpoint = next(s.checkpoint for s in artifact.steps if s.checkpoint)
+    assert parameters_in(checkpoint) == {"member_id"}
+    assert TextPresent(text="Current Balance") in checkpoint.conditions, (
+        "still proves the flow arrived, as well as who it arrived for"
+    )
 
 
 # ---------- guardrails ----------
