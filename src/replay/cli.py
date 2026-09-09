@@ -235,6 +235,8 @@ def run_capability(
     This is the path an AI agent triggers in production.
     """
     from replay.artifact import ArtifactNotFound, ArtifactStore, specialise
+    from replay.artifact.overrides import OverrideRejected
+    from replay.artifact.schema import unrunnable_on_a_browser
     from replay.engine import ReplayExecutor
     from replay.escalation import ConsoleEscalation, InterventionQueue, serve_console
     from replay.evidence import EvidenceRecorder, new_run_id
@@ -251,9 +253,13 @@ def run_capability(
 
     try:
         artifact = specialise(ArtifactStore().load(name, capability_version), tenant)
-    except ArtifactNotFound as exc:
+    except (ArtifactNotFound, OverrideRejected) as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from exc
+
+    if (wrong_surface := unrunnable_on_a_browser(artifact)) is not None:
+        typer.secho(wrong_surface, fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
 
     allowlist = _load_allowlist(policy_file)
     gate = RiskGate(allow_risky=allow_risky, allow_irreversible=allow_irreversible)
@@ -397,12 +403,12 @@ def approve(
 
     Deliberately a separate command rather than something a run does to itself.
     Approval is what lets a capability be invoked unattended, so it should be an
-    act someone performs and can be asked about — the threshold below is a floor
-    on that act, not a substitute for it.
+    act someone performs and can be asked about — the threshold is a floor on
+    that act, not a substitute for it. The floor lives in ``store.approve``,
+    where every caller routes through; this command is where it is *explained*.
     """
-    from replay.artifact import ArtifactNotFound, ArtifactStore
-    from replay.artifact.schema import ApprovalState
-    from replay.reliability import promotion_blockers, tally
+    from replay.artifact import ArtifactNotFound, ArtifactStore, NotApprovable
+    from replay.reliability import tally
 
     store = ArtifactStore()
     try:
@@ -415,16 +421,14 @@ def approve(
     typer.secho(f"{artifact.ref}", fg=typer.colors.CYAN, nl=False)
     typer.echo(f"  {tallied.summary()}")
 
-    blockers = promotion_blockers(tallied, artifact)
-    if blockers:
+    try:
+        path = store.approve(artifact.name, artifact.version, tallied)
+    except NotApprovable as refused:
         typer.secho("refusing to approve:", fg=typer.colors.RED, err=True)
-        for blocker in blockers:
+        for blocker in refused.blockers:
             typer.secho(f"  - {blocker}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from refused
 
-    path = store.approve(
-        artifact.name, artifact.version, tallied.snapshot(approval=ApprovalState.APPROVED)
-    )
     typer.secho(f"approved:  {artifact.ref} → {path}", fg=typer.colors.GREEN)
     typer.echo(f"cited:     {tallied.summary()}, last verified {tallied.last_verified_at}")
 
@@ -475,6 +479,9 @@ def serve(
     port: Annotated[int, typer.Option("--port")] = 8000,
     policy_file: Annotated[Path, typer.Option("--policy")] = Path("policy.toml"),
     evidence_dir: Annotated[Path, typer.Option("--evidence-dir")] = Path("runs"),
+    overrides_dir: Annotated[
+        Path, typer.Option("--overrides-dir", help="Where the per-tenant overrides live.")
+    ] = Path("overrides"),
     headed: Annotated[
         bool, typer.Option("--headed", help="Show the browser, so an operator can take over.")
     ] = False,
@@ -491,7 +498,12 @@ def serve(
     typer.secho(f"catalog:  http://{host}:{port}/capabilities", fg=typer.colors.CYAN)
     typer.secho(f"operator: http://{host}:{port}/operator", fg=typer.colors.MAGENTA)
     run_server(
-        host=host, port=port, policy_file=policy_file, evidence_dir=evidence_dir, headed=headed
+        host=host,
+        port=port,
+        policy_file=policy_file,
+        evidence_dir=evidence_dir,
+        overrides_dir=overrides_dir,
+        headed=headed,
     )
 
 
