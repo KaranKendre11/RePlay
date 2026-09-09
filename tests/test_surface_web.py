@@ -14,6 +14,8 @@ from replay.artifact import ArtifactStore
 from replay.artifact.conditions import (
     AllOf,
     AnyOf,
+    ElementIs,
+    ElementState,
     HttpStatusIs,
     Not,
     RoleNameVisible,
@@ -29,6 +31,7 @@ from replay.artifact.locators import (
     Tier,
 )
 from replay.artifact.schema import Action, TargetSpec
+from replay.policy.allowlist import Allowlist
 from replay.surface import (
     Controller,
     ControlNotHeld,
@@ -36,7 +39,7 @@ from replay.surface import (
     TargetNotFound,
     WebSurface,
 )
-from replay.surface.base import Surface
+from replay.surface.base import Surface, SurfaceError
 from replay.surface.web import xpath_literal
 
 WORK = ["workframe"]
@@ -99,6 +102,41 @@ def test_render_labels_frames_explicitly(surface):
     assert "=== FRAME workframe" in surface.observe(screenshot=False).render()
 
 
+def test_a_mask_that_cannot_be_applied_withholds_the_screenshot(surface):
+    """Regression: an unresolvable mask was skipped and the screenshot taken anyway.
+
+    ``_mask_locators`` swallowed the failure per mask and carried on with a
+    shorter list — no note, no event, an unmasked screenshot in the evidence.
+    Ordinary tenant drift is enough to move a target, and pixels are what no
+    redactor can scrub afterwards.
+    """
+    surface.mask_in_screenshots(spec("Gone", RoleNameLocator(role="textbox", name="Nope")))
+    observation = surface.observe()
+
+    assert observation.screenshot is None
+    assert "withheld" in observation.note and "Gone" in observation.note
+    assert "NOTE:" in observation.render(), "the reason travels with the observation"
+
+
+def test_an_unnamed_frame_is_reachable_by_the_path_it_is_enumerated_under(surface):
+    """Regression: enumerated as "(unnamed)", then looked up by name.
+
+    ``frame_for`` matches ``f.name == name`` and no frame is ever called
+    "(unnamed)", so such a frame was listed and permanently unreachable — and
+    because every consumer swallows ``FrameNotFound``, it was reported as not
+    existing at all rather than as something that could not be reached.
+    """
+    surface.act(
+        Action.NAVIGATE,
+        value='data:text/html,<iframe srcdoc="<p>INNER CONTENT</p>"></iframe>',
+    )
+    inner = [f for f in surface.observe(screenshot=False).frames if "INNER CONTENT" in f.aria]
+
+    assert inner, "the unnamed frame is part of the observation"
+    assert inner[0].path == ["#0"], "named by position, because a position resolves"
+    assert "INNER CONTENT" in surface.text_of(inner[0].path)
+
+
 # ---------- the locator ladder ----------
 
 
@@ -155,6 +193,36 @@ def test_unsupported_strategy_falls_through_instead_of_raising(surface):
     assert resolution.strategy_index == 1
 
 
+def test_enumeration_and_the_ladder_it_writes_count_cells_the_same_way(surface):
+    """Regression: the collector counted td+th, the generated XPath counted td.
+
+    Two consequences, both here. A row of nothing but ``<th>`` is a column
+    header, and offering its cells as values of each other put candidates in
+    front of the model whose ladders resolve to nothing at replay. And on a row
+    a ``<th>`` labels, the off-by-one arithmetic read the cell next door
+    instead — one match, no ambiguity flag, wrong number.
+    """
+    surface.act(
+        Action.NAVIGATE,
+        value=(
+            "data:text/html,<table>"
+            "<tr><th>Type</th><th>Balance</th></tr>"
+            "<tr><td>SAVINGS</td><td>10.00</td></tr>"
+            "<tr><th>Fees</th><td>1.00</td><td>2.00</td></tr>"
+            "</table>"
+        ),
+    )
+    values = [c for c in surface.inventory() if c.group == "value"]
+
+    assert [c.text for c in values] == ["10.00", "1.00", "2.00"], (
+        "the header row labels the columns below it and is not a row of values"
+    )
+    for candidate in values:
+        outcome = surface.act(Action.READ, candidate.to_target(), timeout_ms=600)
+        assert outcome.ok, f"enumerated {candidate.describe!r} does not resolve"
+        assert outcome.read_value == candidate.text, "and resolves to the cell it reported"
+
+
 # ---------- act ----------
 
 
@@ -187,6 +255,31 @@ def test_resolution_is_reported_on_every_targeted_action(surface):
     outcome = surface.act(Action.TYPE, MEMBER_FIELD, "12345")
     assert outcome.resolution.tier is Tier.LABEL_ADJACENT
     assert outcome.to_dict()["resolution"]["kind"] == "label_adjacent"
+
+
+def test_anchored_text_takes_the_match_it_was_told_to_take(surface):
+    """Regression: ``nth`` was declared, validated and then ignored.
+
+    ``_build`` used anchor/relation/offset only and ``resolve`` took
+    ``locator.first`` regardless, so every ``nth`` returned the same cell. On a
+    member with two accounts of the same kind that reports account #1's balance
+    as account #2's — and the run still succeeds.
+
+    "OPEN" is the status cell of both of this member's account rows, so the
+    anchor matches two rows on the real screen.
+    """
+    search_for(surface, "12345")
+
+    def kind_of(n: int) -> TargetSpec:
+        return spec(
+            f"Kind of open account {n}", AnchoredTextLocator(anchor="OPEN", offset=0, nth=n)
+        )
+
+    assert surface.act(Action.READ, kind_of(0)).read_value == "SAVINGS"
+    assert surface.act(Action.READ, kind_of(1)).read_value == "CHECKING"
+
+    beyond = surface.act(Action.READ, kind_of(9), timeout_ms=600)
+    assert not beyond.ok, "asking for match 9 of 2 is a miss, not a different element"
 
 
 # ---------- dialogs ----------
@@ -227,6 +320,65 @@ def test_accepting_a_dialog_completes_the_write_flow(surface):
     )
     assert outcome.ok
     assert "SUB-ACCOUNT OPENED" in surface.text_of(WORK)
+
+
+def test_a_failed_action_does_not_leave_accept_armed_for_the_next_one(surface):
+    """Regression: dialog policy belongs to the action that asked for it.
+
+    ``_pending_dialog`` was set before anything could fail and cleared on no
+    failure path, so an irreversible step that armed ACCEPT and then could not
+    resolve its target left ACCEPT armed. The next click — which passed no
+    policy at all — accepted a confirm() and opened an account the flow never
+    asked to open.
+    """
+    search_for(surface, "12345")
+    surface.act(
+        Action.CLICK,
+        spec("Open link", RoleNameLocator(role="link", name="Open Sub-Account")),
+        expect_navigation=True,
+    )
+    surface.act(Action.SELECT, spec("Product", RoleNameLocator(role="combobox", name="")), "S02")
+
+    armed = surface.act(
+        Action.CLICK,
+        spec("Missing", RoleNameLocator(role="button", name="Nope")),
+        on_dialog=DialogPolicy.ACCEPT,
+        timeout_ms=600,
+    )
+    assert not armed.ok, "the step that armed ACCEPT never ran"
+
+    # expect_navigation, so the assertion is not racing the form submit: an
+    # accepted confirm() navigates, a dismissed one demonstrably does not.
+    outcome = surface.act(
+        Action.CLICK,
+        spec("Submit", RoleNameLocator(role="button", name="Submit")),
+        expect_navigation=True,
+        timeout_ms=2_000,
+    )
+    assert any("confirm" in d for d in outcome.dialogs)
+    assert not outcome.navigated, "the previous action's ACCEPT must not answer this dialog"
+    assert "SUB-ACCOUNT OPENED" not in surface.text_of(WORK)
+
+
+def test_a_click_driven_navigation_is_checked_against_the_allowlist(meridian_server):
+    """Regression: the allowlist only ever saw URLs somebody typed.
+
+    ``check_navigation`` ran for ``Action.NAVIGATE`` and nothing else, so a
+    click that follows a link or submits a form reached any route unchecked and
+    nothing re-checked the URL afterwards. The routes here permit the frameset,
+    the nav frame and the search screen, and not the screen Search submits to.
+    """
+    narrow = Allowlist(domains=("127.0.0.1:*",), routes=("/", "/nav", "/search"))
+    with WebSurface(allowlist=narrow) as s:
+        assert s.act(Action.NAVIGATE, value=meridian_server).ok, "the start page is permitted"
+        s.act(Action.TYPE, MEMBER_FIELD, "12345")
+        outcome = s.act(Action.CLICK, SEARCH_BUTTON, expect_navigation=True)
+
+        assert not outcome.ok
+        assert "refused" in outcome.error
+        assert "/member" in outcome.error, "the route reached by the click, not the one typed"
+        assert "blank" in outcome.note, "the run must not carry on observing that page"
+        assert "MEMBER" not in s.text_of(), "and nothing off-limits is left readable"
 
 
 # ---------- conditions ----------
@@ -273,6 +425,56 @@ def test_http_status_distinguishes_a_server_error_from_a_blank_page(surface, mer
     surface.act(Action.NAVIGATE, value=f"{meridian_server}/member?f7=12345&inject=error500")
     assert surface.evaluate(HttpStatusIs(status=500))
     assert not surface.evaluate(HttpStatusIs(status=200))
+
+
+def test_a_surface_that_cannot_look_fails_a_checkpoint_rather_than_passing_it(surface):
+    """Regression: "nothing readable" and "cannot look" were the same answer.
+
+    ``text_of`` returned ``""`` for a dead browser exactly as it does for a
+    blank screen, and ``TextAbsent`` reads ``text not in ""`` as ``True``. A
+    closed surface therefore satisfied every "error text is absent" assertion
+    in the taxonomy — the misdiagnosis the protocol says text_of exists to
+    prevent, arriving as a clean pass.
+    """
+    surface.close()
+
+    with pytest.raises(SurfaceError):
+        surface.text_of(WORK)
+    assert not surface.evaluate(TextAbsent(text="APPLICATION ERROR"))
+    assert not surface.evaluate(TextAbsent(text="SESSION EXPIRED"))
+    assert not surface.evaluate(TextPresent(text="MEMBER INQUIRY"))
+
+
+def test_http_status_reports_the_frame_whose_content_is_being_judged(surface, meridian_server):
+    """Regression: the frameset's 200 outran the work frame's 440.
+
+    The top document and each child are separate navigations racing, and
+    ``_note_response`` kept only the most recent from any of them. The frameset
+    and the nav frame are exempt from the session check, so both are 200 while
+    the work frame carries SESSION EXPIRED behind a 440 — and the taxonomy read
+    200 and ``HttpStatusIs(440)`` as False.
+    """
+    surface.act(Action.NAVIGATE, value=f"{meridian_server}/?inject=timeout")
+
+    assert "SESSION EXPIRED" in surface.text_of(WORK), "the work frame really did fail"
+    assert surface.observe(screenshot=False).http_status == 440
+    assert surface.evaluate(HttpStatusIs(status=440))
+    assert not surface.evaluate(HttpStatusIs(status=200))
+
+
+def test_a_malformed_selector_makes_a_condition_false_rather_than_raising(surface):
+    """Regression: the two call sites of ``_build`` disagreed about selector errors.
+
+    ``resolve`` catches a ``PlaywrightError`` from ``count()`` and records the
+    strategy as a miss; ``_element_state_matches`` left ``count()`` outside its
+    ``try``, so the same broken selector escaped ``evaluate`` raw.
+    """
+    broken = ElementIs(
+        locator=SelectorLocator(engine="css", expression="input["),
+        state=ElementState.VISIBLE,
+    )
+    assert surface.evaluate(broken) is False
+    assert surface.evaluate(Not(condition=broken)) is True
 
 
 # ---------- the protocol ----------
@@ -442,3 +644,24 @@ def test_a_click_that_moves_nothing_explains_itself(surface):
     assert outcome.ok, "the click itself succeeded"
     assert not outcome.navigated
     assert "dialog" in outcome.note and "accept" in outcome.note
+
+
+def test_a_click_that_never_happened_is_a_failure_not_a_stalled_navigation(surface):
+    """Regression: the two timeouts under expect_navigation are not the same event.
+
+    ``<head>`` resolves and is never clickable, so the click times out inside
+    the navigation wait. That used to escape ``act`` as an ``UnboundLocalError``
+    — which is a ``NameError``, so nothing here caught it and it killed the
+    replay with no FailureClass and no evidence. Reporting it as ``ok=True``
+    instead would be worse still: a step that never happened, recorded as done.
+    """
+    outcome = surface.act(
+        Action.CLICK,
+        spec("Unclickable element", SelectorLocator(engine="css", expression="head")),
+        expect_navigation=True,
+        timeout_ms=1_000,
+    )
+    assert not outcome.ok
+    assert "Timeout" in outcome.error
+    assert not outcome.navigated
+    assert outcome.note is None, "nothing succeeded, so there is no stalled navigation to explain"
