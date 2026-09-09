@@ -234,6 +234,32 @@ def test_success_must_be_verifiable():
         artifact(steps=unchecked)
 
 
+def test_a_risky_step_must_carry_its_own_proof_of_success():
+    """One checkpoint somewhere does not prove the step that did the damage worked.
+
+    That step is the one a policy refusal hands to an operator, and
+    ``_operator_performed`` reports ``ok`` unconditionally — it only says control
+    came back. So a capability whose sole checkpoint sits on some other step can
+    report ``success`` on an operator's word alone. ``open_subaccount`` was safe
+    only because s7 happens to be both the irreversible step and the
+    checkpointed one.
+    """
+    steps = artifact().steps
+    steps[0] = steps[0].model_copy(update={"risk": RiskClass.IRREVERSIBLE})
+    with pytest.raises(ValidationError, match="carry its own proof"):
+        artifact(steps=steps, policy=PolicyBlock(max_risk=RiskClass.IRREVERSIBLE))
+
+
+def test_a_risky_step_that_proves_itself_is_accepted():
+    """The rule is a checkpoint on the risky step, not a ban on risky steps."""
+    steps = artifact().steps
+    steps[0] = steps[0].model_copy(
+        update={"risk": RiskClass.IRREVERSIBLE, "checkpoint": TextPresent(text="Account opened")}
+    )
+    a = artifact(steps=steps, policy=PolicyBlock(max_risk=RiskClass.IRREVERSIBLE))
+    assert a.max_step_risk is RiskClass.IRREVERSIBLE
+
+
 def test_a_step_id_is_constrained_like_every_other_identifier():
     """It was the one identifier here with a length limit and no pattern.
 
@@ -308,7 +334,12 @@ def test_sensitive_parameters_may_not_carry_an_example():
 
 def test_policy_must_permit_the_risk_actually_recorded():
     risky = artifact().steps
-    risky[0] = risky[0].model_copy(update={"risk": RiskClass.IRREVERSIBLE})
+    # Checkpointed as well as reclassified: a step above safe risk now has to
+    # carry its own proof of success, and an artifact that fails that rule never
+    # reaches the policy rule this test is about.
+    risky[0] = risky[0].model_copy(
+        update={"risk": RiskClass.IRREVERSIBLE, "checkpoint": TextPresent(text="Account opened")}
+    )
     with pytest.raises(ValidationError, match=r"policy\.max_risk"):
         artifact(steps=risky, policy=PolicyBlock(max_risk=RiskClass.SAFE))
 
