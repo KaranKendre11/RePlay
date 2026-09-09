@@ -317,8 +317,8 @@ evidence/
   discovery-<run_id>/
     run.jsonl          structured decision log — what, why, which tier
     transcript.jsonl   LLM messages, redacted
-    steps/step-NN.png
-    a11y/step-NN.json
+    steps/capture-NN.png
+    observations/capture-NN.json
     result.json
   replay-<run_id>/     same shape, no transcript
   replay-error-<run_id>/
