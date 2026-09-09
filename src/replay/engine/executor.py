@@ -21,7 +21,10 @@ us the answer.
 **Checkpoints are asserted, not assumed.** A click that raises no error has not
 demonstrated anything. Without the assertion a replay reports success whenever
 nothing crashed, which is exactly the failure mode that makes UI automation
-untrustworthy. That holds for a step a human performed during a handoff too:
+untrustworthy. A checkpoint may also name a parameter, which is substituted
+from the caller's arguments before the surface ever sees it — screen chrome
+proves a member page is loaded, and only the member id proves it is the one
+that was asked for. That holds for a step a human performed during a handoff too:
 the automation does not repeat their action, but it does check the result,
 because "I have handled it" is a claim about the operator rather than about the
 application.
@@ -31,14 +34,17 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from replay.artifact.conditions import Condition
+from replay.artifact.conditions import Condition, ParamText, parameters_in, substitute
 from replay.artifact.schema import (
     Action,
     CapabilityArtifact,
     ParamRef,
+    RecoveryAction,
+    RiskClass,
     Step,
     WaitKind,
 )
@@ -83,6 +89,8 @@ def _describe(condition: Any) -> str:
     kind = getattr(condition, "kind", "condition")
     for attribute in ("text", "pattern", "name"):
         value = getattr(condition, attribute, None)
+        if isinstance(value, ParamText):
+            return f"{kind} <{value.param}>"
         if value:
             return f"{kind} {value!r}"
     nested = getattr(condition, "conditions", None)
@@ -92,6 +100,19 @@ def _describe(condition: Any) -> str:
     if inner is not None:
         return f"{kind}({_describe(inner)})"
     return str(kind)
+
+
+def _evidence_name(step_id: str) -> str:
+    """A step id, made safe to put in a file path.
+
+    ``Step.id`` is length-bounded and otherwise unconstrained, unlike every
+    other identifier in the schema. An id of ``../../../../pwned`` wrote a DOM
+    dump outside the evidence root and did not even raise, because the
+    recorder's containment check is lexical. The id is the artifact's to choose
+    and the artifact is not trusted with a path, so it is spelled out here as
+    well as being worth constraining in the schema.
+    """
+    return re.sub(r"[^A-Za-z0-9_-]", "_", step_id)[:32] or "step"
 
 
 def rebase(url: str, base: str) -> str:
@@ -137,6 +158,36 @@ SCREEN_EXPECTATION = {
 }
 
 
+#: How far into a surface's error string we are willing to read, and from
+#: where. ``Surface.act`` reports a failure as a string, so the diagnosis has to
+#: be recovered from prose — but part of that prose is *artifact-supplied*:
+#: ``TargetNotFound`` interpolates ``target.description``. Searching the whole
+#: string let a control described as "refused-items queue link" turn locator
+#: drift into a policy refusal, which pages an operator with "should this happen
+#: at all" and skips screen classification, so a 500 on that step was
+#: mislabelled too. Only the leading exception name is read, which is the one
+#: part of the string the artifact cannot write.
+ERROR_PREFIX = re.compile(r"^(\w+): ")
+
+
+def classify_error(error: str) -> FailureClass:
+    """What a failed action's error string says about the *kind* of failure.
+
+    Prefix-anchored on purpose, and still a compromise: the protocol gives the
+    engine no structural channel for this, so a second surface implementation
+    that formats its errors differently loses ``TARGET_NOT_FOUND`` and with it
+    the drift diagnosis. The honest fix is a failure class on ``ActionOutcome``.
+    """
+    if error.startswith(f"{PolicyRefused.__name__}: ") or error.startswith("refused "):
+        # A refusal is not the application misbehaving, so it is kept apart
+        # from every other error — including from the screen's opinion.
+        return FailureClass.POLICY_REFUSED
+    prefix = ERROR_PREFIX.match(error)
+    if prefix is not None and prefix.group(1) == TargetNotFound.__name__:
+        return FailureClass.TARGET_NOT_FOUND
+    return FailureClass.ACTION_FAILED
+
+
 class InvalidArguments(ValueError):
     """The caller's arguments do not satisfy the capability's declared inputs."""
 
@@ -154,6 +205,11 @@ def bind_parameters(artifact: CapabilityArtifact, supplied: dict[str, Any]) -> d
     document a reviewer is invited to tighten by hand, and a reviewer writing
     ``\d{5}`` should not silently get a looser check than the one they
     narrowed.
+
+    A condition may name a parameter too, and one naming an argument the caller
+    did not supply cannot be evaluated. That is a mismatch between the request
+    and the contract, so it is reported here with the rest of them rather than
+    as a mid-flow crash.
     """
     declared = {p.name: p for p in artifact.inputs}
     unknown = sorted(set(supplied) - set(declared))
@@ -174,7 +230,26 @@ def bind_parameters(artifact: CapabilityArtifact, supplied: dict[str, Any]) -> d
                 f"argument {name!r} does not match the declared pattern {spec.pattern!r}"
             )
         bound[name] = value
+
+    referenced = {n for c in _conditions(artifact) for n in parameters_in(c)}
+    unresolvable = sorted(referenced - set(bound))
+    if unresolvable:
+        raise InvalidArguments(
+            f"{artifact.ref} declares a condition on parameter(s) {unresolvable}, "
+            "for which no value was supplied"
+        )
     return bound
+
+
+def _conditions(artifact: CapabilityArtifact) -> Iterator[Condition]:
+    """Every condition the engine may be asked to evaluate during a run."""
+    for step in artifact.steps:
+        if step.checkpoint is not None:
+            yield step.checkpoint
+        for rule in step.on_error:
+            yield rule.when
+    for outcome in artifact.outcomes:
+        yield outcome.detect
 
 
 class ReplayExecutor:
@@ -205,8 +280,13 @@ class ReplayExecutor:
         self.base_url = base_url
         self.step_timeout_ms = step_timeout_ms
         self.recorder = recorder or EvidenceRecorder(new_run_id("replay"))
+        # Per-run state, declared here and reset by :meth:`run`. The caller's
+        # arguments are kept because conditions are resolved against them, so a
+        # checkpoint can assert the record that was asked about rather than
+        # only the shape of the screen.
         self._reads: dict[str, str] = {}
         self._captures = 0
+        self._bound: dict[str, str] = {}
         # Default-deny: without an explicit gate, only safe capabilities run.
         self.gate = gate or RiskGate()
         # Default-nobody: an unattended run fails rather than waiting forever
@@ -216,7 +296,30 @@ class ReplayExecutor:
     # -- entry point ------------------------------------------------------
 
     def run(self, arguments: dict[str, Any] | None = None) -> ReplayResult:
+        """Replay the capability once.
+
+        An executor may be called more than once — determinism is only
+        measurable by doing so — so everything a run accumulates is reset here
+        rather than in ``__init__``. It was initialised there and never
+        cleared, which meant a read step that produced no value silently
+        inherited the previous invocation's: member 22222's result carried
+        member 11111's balance, reported as ``success``.
+
+        The evidence recorder is *not* reset, because this executor does not
+        own it. Two runs through one recorder share one directory and one
+        ``result.json``, so a caller who wants a run apiece builds an executor
+        apiece with a recorder apiece — which is what the CLI and the API do.
+
+        Whatever happens, the run is finished and written down. Anything
+        outside ``ControlNotHeld`` and ``SurfaceError`` still propagates — a
+        raw driver error is not something this engine can classify — but it no
+        longer takes ``result.json`` with it, which used to make the run
+        invisible to ``reliability`` as well as unexplained.
+        """
         started = time.monotonic()
+        self._reads = {}
+        self._captures = 0
+        self._bound = {}
         result = ReplayResult(
             capability=self.artifact.ref,
             run_id=self.recorder.run_id,
@@ -227,6 +330,12 @@ class ReplayExecutor:
         self._announce_surface()
 
         try:
+            return self._run(result, arguments or {})
+        finally:
+            self._finish(result, started)
+
+    def _run(self, result: ReplayResult, arguments: dict[str, Any]) -> ReplayResult:
+        try:
             bound = bind_parameters(self.artifact, arguments or {})
         except InvalidArguments as exc:
             result.failure = Failure(
@@ -235,8 +344,9 @@ class ReplayExecutor:
                 expected=f"arguments satisfying {self.artifact.ref}",
                 observed=str(exc),
             )
-            self._finish(result, started)
             return result
+
+        self._bound = bound
 
         # Sensitive values are masked before anything can write them, and the
         # controls holding them are covered before any screenshot is taken — on
@@ -274,7 +384,6 @@ class ReplayExecutor:
                 observed=str(refusal),
             )
             self.recorder.event("policy_refused", scope="capability", reason=str(refusal))
-            self._finish(result, started)
             return result
 
         self.recorder.event(
@@ -303,7 +412,6 @@ class ReplayExecutor:
                 observed=f"{type(exc).__name__}: {exc}",
             )
 
-        self._finish(result, started)
         return result
 
     # -- the loop ---------------------------------------------------------
@@ -331,33 +439,73 @@ class ReplayExecutor:
                 # and it gets the same answer as every other step.
                 report = self._operator_performed(step)
                 result.steps.append(report)
+                if step.checkpoint is None:
+                    # Nothing to check their work against. Carrying on would
+                    # report an account opened on an operator's say-so, which is
+                    # the one claim this engine does not accept from anybody.
+                    result.failure = Failure(
+                        step_id=step.id,
+                        failure_class=FailureClass.CHECKPOINT_UNMET,
+                        expected=f"a checkpoint on {step.id}, the step the operator performed",
+                        observed=(
+                            "the operator reported the step done and the capability declares "
+                            "nothing that would show it, so the automation cannot confirm it"
+                        ),
+                        evidence=self._capture(step.id),
+                    )
+                    self._record(index, report)
+                    return
                 self._settle_after_handoff(step)
-                if not self._after_step(result, step, report):
+                proceed = self._after_step(result, step, report)
+                self._record(index, report)
+                if not proceed:
                     return
                 continue
 
-            report = self._perform(step, bound, index)
+            report = self._perform(step, bound)
             result.steps.append(report)
 
             if not report.ok:
                 failure = self._diagnose(step, report)
+                self._record(index, report)
                 if self._escalate(result, failure, step):
                     # A person intervened on the live session. Retry the step
                     # rather than assuming their fix put us where we needed to
                     # be — the whole point of a checkpoint is not to assume.
-                    report = self._perform(step, bound, index)
+                    report = self._perform(step, bound)
                     result.steps.append(report)
+                    if not report.ok:
+                        self._record(index, report)
                 if not report.ok:
                     result.failure = self._diagnose(step, report)
                     return
 
-            if not self._after_step(result, step, report):
+            proceed = self._after_step(result, step, report)
+            self._record(index, report)
+            if not proceed:
                 return
 
         result.outputs = self._extract_outputs()
+        missing = [spec for spec in self.artifact.outputs if spec.name not in result.outputs]
+        if missing:
+            # `success` means "use `outputs`". Handing back a dict short of a
+            # key the contract declares, with nothing to say so, makes the
+            # caller find out by KeyError at best and by using a stale value at
+            # worst. A read that produced nothing is a failure of the flow.
+            result.failure = Failure(
+                step_id=missing[0].source.step_id,
+                failure_class=FailureClass.CHECKPOINT_UNMET,
+                expected=f"a value for declared output(s) {[m.name for m in missing]}",
+                observed=self._observed(),
+                evidence=self._capture(missing[0].source.step_id),
+            )
+            return
+
         result.status = ReplayStatus.SUCCESS
 
-    def _after_step(self, result: ReplayResult, step: Step, report: StepReport) -> bool:
+    def _after_step(
+        self, result: ReplayResult, step: Step, report: StepReport, *, escalate: bool = True
+    ) -> bool:
         """Read what the step left on screen. Returns whether the loop goes on.
 
         Every way a step can end up done routes through here, including the one
@@ -380,6 +528,14 @@ class ReplayExecutor:
         automation is, the rules are declared per step rather than per actor,
         and one that stopped applying because a human had been involved would
         be a rule nobody could reason about.
+
+        A checkpoint that will not come true reaches a person, exactly as a
+        failed action does. It used to be the one failure the engine wrote down
+        and told nobody about, which also meant an expired session or a 500
+        *noticed while verifying* was handled differently from the identical
+        condition noticed while acting. If someone resumes, we look again rather
+        than take their word for it — once, because a second refusal from the
+        same screen is an answer, not a queue to keep re-raising.
         """
         outcome = self._detect_outcome(step)
         if outcome is not None:
@@ -390,13 +546,17 @@ class ReplayExecutor:
 
         if step.checkpoint is not None and not self._verify(step.checkpoint, step, report):
             observed = self._observed()
-            result.failure = Failure(
+            failure = Failure(
                 step_id=step.id,
                 failure_class=(self._classify_screen(observed) or FailureClass.CHECKPOINT_UNMET),
-                expected=f"checkpoint {_describe(step.checkpoint)}",
+                expected=f"checkpoint {_describe(self._resolved(step.checkpoint))}",
                 observed=observed,
                 evidence=self._capture(step.id),
             )
+            if escalate and self._escalate(result, failure, step):
+                self._settle_after_handoff(step)
+                return self._after_step(result, step, report, escalate=False)
+            result.failure = failure
             return False
 
         return True
@@ -422,13 +582,13 @@ class ReplayExecutor:
         short for the slow one.
         """
         if step.checkpoint is None:
-            # Nothing is expected, so there is nothing to wait for. Spending
-            # the budget here would tax every blocked step for no signal.
+            # Unreachable from the handoff path, which refuses a step it cannot
+            # verify before it gets here, and a no-op for any other caller.
             return
 
         deadline = time.monotonic() + self.step_timeout_ms / 1000
         while time.monotonic() < deadline:
-            if self.surface.evaluate(step.checkpoint) or self._detect_outcome(step) is not None:
+            if self._holds(step.checkpoint) or self._detect_outcome(step) is not None:
                 return
             time.sleep(0.1)
 
@@ -443,10 +603,29 @@ class ReplayExecutor:
         done; the checkpoint that follows is what decides whether it was. It is
         also where any recovery applied while verifying their work is written
         down, which would otherwise have nowhere to go.
+
+        Which means a step carrying no checkpoint cannot be handed off at all:
+        ``ok`` here is unconditional, so with nothing to assert afterwards the
+        run would report success having verified nothing. The schema requires a
+        checkpoint *somewhere* in the capability, which is not the same as one
+        on the step a person performed — ``open_subaccount`` satisfies both only
+        because s7 happens to carry it.
         """
         return StepReport(step_id=step.id, intent=step.intent, action=step.action.value, ok=True)
 
-    def _perform(self, step: Step, bound: dict[str, str], index: int) -> StepReport:
+    def _record(self, index: int, report: StepReport) -> None:
+        """Write the step's line in the run log, once its fate is settled.
+
+        After the checkpoint, not before it. ``_perform`` used to log the moment
+        the action returned, so ``run.jsonl`` permanently said ``ok: true,
+        recovered: []`` for a step whose recovery rules then fired and whose
+        checkpoint then failed — while ``result.json``'s copy of the same step
+        said otherwise. Two records of one step, disagreeing, in one evidence
+        directory, and the log is the one a reviewer reads first.
+        """
+        self.recorder.event("step", index=index, **report.to_dict())
+
+    def _perform(self, step: Step, bound: dict[str, str]) -> StepReport:
         started = time.monotonic()
         report = StepReport(
             step_id=step.id,
@@ -460,7 +639,7 @@ class ReplayExecutor:
 
         value = self._value(step, bound)
         expect_navigation = any(w.kind is WaitKind.NAVIGATION for w in step.waits)
-        dialog = DialogPolicy.ACCEPT if step.risk.value == "irreversible" else None
+        dialog = DialogPolicy.ACCEPT if step.risk is RiskClass.IRREVERSIBLE else None
 
         outcome = self.surface.act(
             step.action,
@@ -487,29 +666,53 @@ class ReplayExecutor:
         report.ok = outcome.ok
         report.error = outcome.error
         report.duration_ms = int((time.monotonic() - started) * 1000)
+        # Kept even when the step succeeded. A confirmation the automation
+        # answered on the way through is the sort of thing that has to be
+        # visible afterwards on an application whose submit is a native
+        # confirm() — and a click that did not move the page is the note's
+        # motivating case.
+        report.dialogs = list(outcome.dialogs)
+        report.note = outcome.note
 
         if outcome.read_value is not None:
             self._reads[step.id] = outcome.read_value
 
-        self.recorder.event("step", index=index, **report.to_dict())
         return report
 
     # -- interpretation ---------------------------------------------------
 
     def _value(self, step: Step, bound: dict[str, str]) -> str | None:
-        if isinstance(step.value, ParamRef):
-            return bound.get(step.value.param)
-        if step.action is Action.NAVIGATE and isinstance(step.value, str):
+        value = bound.get(step.value.param) if isinstance(step.value, ParamRef) else step.value
+        if step.action is Action.NAVIGATE and isinstance(value, str):
             # An explicit target wins; otherwise the artifact's entry point,
             # which a tenant override may have replaced. For the base
             # deployment the two are identical and this is a no-op.
+            #
+            # Rebased after the parameter is resolved, not before: a navigate
+            # whose URL comes from the caller returned early here and reached
+            # the recorded deployment while every other step went to the
+            # overridden one.
             base = self.base_url or self.artifact.app.entry_url_pattern
-            return rebase(step.value, base) if base else step.value
-        return step.value
+            return rebase(value, base) if base else value
+        return value
+
+    def _resolved(self, condition: Condition) -> Condition:
+        """The condition as it applies to *this* invocation."""
+        return substitute(condition, self._bound)
+
+    def _holds(self, condition: Condition) -> bool:
+        """Is this condition true right now, for the arguments we were given?
+
+        Every evaluation in the engine goes through here. A condition naming a
+        parameter is meaningless without the caller's value, and one path that
+        forgot to substitute would silently be asking the surface a different
+        question from the rest.
+        """
+        return self.surface.evaluate(self._resolved(condition))
 
     def _detect_outcome(self, step: Step) -> Outcome | None:
         for declared in self.artifact.outcomes:
-            if self.surface.evaluate(declared.detect):
+            if self._holds(declared.detect):
                 return Outcome(
                     code=declared.code,
                     message=declared.message,
@@ -518,12 +721,12 @@ class ReplayExecutor:
         return None
 
     def _verify(self, condition: Condition, step: Step, report: StepReport) -> bool:
-        if self.surface.evaluate(condition):
+        if self._holds(condition):
             return True
         # One retry after the recovery rules have had a chance. A checkpoint
         # that fails twice is a real failure, not a timing artefact.
         if self._recover(step, report):
-            return self.surface.evaluate(condition)
+            return self._holds(condition)
         return False
 
     def _recover(self, step: Step, report: StepReport) -> bool:
@@ -536,23 +739,50 @@ class ReplayExecutor:
         applied = False
         for rule in step.on_error:
             for _ in range(rule.max_attempts):
-                if not self.surface.evaluate(rule.when):
+                if not self._holds(rule.when):
                     break
-                self._apply(rule)
+                if not self._apply(rule):
+                    # The condition held and the recovery did not work. Writing
+                    # "recovered" here would say the interstitial was cleared
+                    # when it is still on screen, which is worse than silence:
+                    # the checkpoint failure that follows would look unexplained.
+                    self.recorder.event(
+                        "recovery_failed",
+                        step_id=step.id,
+                        rule=rule.do.value,
+                        when=_describe(rule.when),
+                    )
+                    break
                 report.recovered.append(f"{rule.do.value}:{_describe(rule.when)}")
                 self.recorder.event("recovered", step_id=step.id, rule=rule.do.value)
                 applied = True
         return applied
 
-    def _apply(self, rule: Any) -> None:
-        match rule.do.value:
-            case "click" | "dismiss":
-                if rule.target is not None:
+    def _apply(self, rule: Any) -> bool:
+        """Perform one recovery. Returns whether it actually happened.
+
+        A rule that did nothing must not be reported as one that worked. The
+        ``dismiss`` case used to be exactly that — the schema requires a target
+        only for ``click``, so a targetless dismiss fell through the guard and
+        recovered nothing while the evidence said otherwise. Without a target
+        there is only one thing to dismiss, and it is the dialog.
+        """
+        match rule.do:
+            case RecoveryAction.CLICK:
+                outcome = self.surface.act(Action.CLICK, rule.target, expect_navigation=True)
+            case RecoveryAction.DISMISS:
+                outcome = (
                     self.surface.act(Action.CLICK, rule.target, expect_navigation=True)
-            case "accept_dialog":
-                self.surface.act(Action.ACCEPT_DIALOG)
-            case "retry":
-                self.surface.act(Action.WAIT, value="1000")
+                    if rule.target is not None
+                    else self.surface.act(Action.DISMISS_DIALOG)
+                )
+            case RecoveryAction.ACCEPT_DIALOG:
+                outcome = self.surface.act(Action.ACCEPT_DIALOG)
+            case RecoveryAction.RETRY:
+                outcome = self.surface.act(Action.WAIT, value="1000")
+            case _:
+                return False
+        return outcome.ok
 
     def _classify_screen(self, observed: str) -> FailureClass | None:
         """Read the screen for conditions that outrank whatever step we are on.
@@ -596,16 +826,13 @@ class ReplayExecutor:
         error = report.error or ""
         observed = self._observed()
 
-        if "refused" in error:
+        from_step = classify_error(error)
+        if from_step is FailureClass.POLICY_REFUSED:
             from_screen = None
             failure_class = FailureClass.POLICY_REFUSED
         else:
             from_screen = self._classify_screen(observed)
-            failure_class = from_screen or (
-                FailureClass.TARGET_NOT_FOUND
-                if TargetNotFound.__name__ in error
-                else FailureClass.ACTION_FAILED
-            )
+            failure_class = from_screen or from_step
 
         evidence = self._capture(step.id)
         if from_screen is None:
@@ -628,6 +855,11 @@ class ReplayExecutor:
         )
 
     def _extract_outputs(self) -> dict[str, str]:
+        """The declared outputs that were actually read.
+
+        Filtered rather than assumed: a step that ran without producing a value
+        has no entry here, and :meth:`_execute` refuses to call that a success.
+        """
         return {
             spec.name: self._reads[spec.source.step_id]
             for spec in self.artifact.outputs
@@ -672,7 +904,7 @@ class ReplayExecutor:
             HumanAction(kind=a.get("kind", "?"), label=a.get("label", "")) for a in performed
         ]
         resolved.human_actions.extend(actions)
-        result.escalation = resolved.to_dict()
+        result.escalations.append(resolved.to_dict())
         self.recorder.event("escalation_resolved", **resolved.to_dict())
 
         return resolved.resolution is Resolution.RESUMED
@@ -757,7 +989,8 @@ class ReplayExecutor:
 
         if isinstance(self.surface, DumpsMarkup):
             markup = self.surface.html_of()
-            refs["dom"] = self.recorder.snapshot_text(f"dom/{step_id}.html", markup)
+            name = f"dom/{self._captures:02d}-{_evidence_name(step_id)}.html"
+            refs["dom"] = self.recorder.snapshot_text(name, markup)
         return refs
 
     def _finish(self, result: ReplayResult, started: float) -> None:

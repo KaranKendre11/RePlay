@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from replay.artifact import ArtifactStore
+from replay.artifact.conditions import TextPresent
 from replay.artifact.schema import Action, ApprovalState
 from replay.engine import Failure, FailureClass, ReplayExecutor, ReplayStatus
 from replay.escalation import (
@@ -354,6 +355,86 @@ def test_an_operator_who_resumes_without_doing_the_work_does_not_get_a_pass(
     assert result.status is ReplayStatus.FAILED, "an unperformed step is not a success"
     assert result.failure.failure_class is FailureClass.CHECKPOINT_UNMET
     assert result.failure.step_id == "s7"
+    assert not result.outputs
+
+
+def test_a_checkpoint_that_will_not_come_true_reaches_a_person(meridian_server, tmp_path):
+    """The one failure the engine used to write down and tell nobody about.
+
+    `_escalate` had two call sites — a refused step and a failed action — and a
+    missed checkpoint was neither, so `CHECKPOINT_UNMET` was unreachable in the
+    replay engine however loudly the taxonomy declared it. Worse, the same
+    branch classifies the screen, so an expired session or a 500 noticed *while
+    verifying* was handled differently from the identical condition noticed
+    while acting.
+    """
+    artifact = ArtifactStore("artifacts").load("lookup_balance")
+    broken = artifact.model_copy(deep=True)
+    broken.steps[2] = broken.steps[2].model_copy(
+        update={"checkpoint": TextPresent(text="THIS NEVER APPEARS", frame_path=["workframe"])}
+    )
+
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-checkpoint", root=tmp_path) as recorder,
+    ):
+        operator = ScriptedOperator()  # resumes, having touched nothing
+        result = ReplayExecutor(
+            surface,
+            broken,
+            recorder=recorder,
+            base_url=meridian_server,
+            step_timeout_ms=1_000,
+            escalation=operator,
+        ).run({"member_id": "12345"})
+
+    assert operator.seen, "nobody was asked about a checkpoint that could not come true"
+    assert operator.seen[0].reason is InterventionReason.CHECKPOINT_UNMET
+    assert len(operator.seen) == 1, "asked once; a second refusal is an answer"
+    assert result.status is ReplayStatus.FAILED
+    assert result.failure.failure_class is FailureClass.CHECKPOINT_UNMET
+
+
+def test_a_step_with_nothing_to_verify_it_is_not_completed_by_a_handoff(
+    meridian_server, write_capability, tmp_path
+):
+    """ "I have handled it" is a claim about the operator, not the application.
+
+    `_operator_performed` returns ok unconditionally and `_settle_after_handoff`
+    returns immediately with no checkpoint, so a blocked step carrying none was
+    reported `success` on an operator's say-so alone — an account opened
+    because someone said they opened it. The schema only requires a checkpoint
+    *somewhere*, so this is permitted; the shipped capability is safe by
+    accident, because s7 happens to carry one.
+    """
+    unverifiable = write_capability.model_copy(deep=True)
+    submit = next(i for i, s in enumerate(unverifiable.steps) if s.id == "s7")
+    unverifiable.steps[submit] = unverifiable.steps[submit].model_copy(update={"checkpoint": None})
+
+    with (
+        WebSurface(allowlist=PERMISSIVE) as surface,
+        EvidenceRecorder("escalation-unverifiable", root=tmp_path) as recorder,
+    ):
+
+        def operator_submits(_request):
+            surface.answer_next_dialog(DialogPolicy.ACCEPT)
+            frame = surface.frame_for(["workframe"])
+            frame.get_by_role("button", name="Submit").click()
+            frame.wait_for_load_state("load")
+
+        result = ReplayExecutor(
+            surface,
+            unverifiable,
+            recorder=recorder,
+            base_url=meridian_server,
+            gate=RiskGate(allow_risky=True),
+            escalation=ScriptedOperator(operator_submits),
+        ).run({"member_id": "12345", "product_code": "S02", "opening_deposit": "50.00"})
+
+    assert result.escalation["resolution"] == "resumed"
+    assert result.status is ReplayStatus.FAILED, "nothing verified the operator's work"
+    assert result.failure.step_id == "s7"
+    assert "checkpoint" in result.failure.expected
     assert not result.outputs
 
 

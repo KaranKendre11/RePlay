@@ -368,7 +368,13 @@ def test_a_click_driven_navigation_is_checked_against_the_allowlist(meridian_ser
     nothing re-checked the URL afterwards. The routes here permit the frameset,
     the nav frame and the search screen, and not the screen Search submits to.
     """
-    narrow = Allowlist(domains=("127.0.0.1:*",), routes=("/", "/nav", "/search"))
+    narrow = Allowlist(
+        domains=("127.0.0.1:*",),
+        routes=("/", "/nav", "/search"),
+        # Every field refuses by default, so the action list has to be granted
+        # explicitly; this test is about routes, not action types.
+        actions=frozenset(Action),
+    )
     with WebSurface(allowlist=narrow) as s:
         assert s.act(Action.NAVIGATE, value=meridian_server).ok, "the start page is permitted"
         s.act(Action.TYPE, MEMBER_FIELD, "12345")

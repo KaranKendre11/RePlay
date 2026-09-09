@@ -27,7 +27,7 @@ from replay.artifact import (
     apply_override,
     specialise,
 )
-from replay.artifact.conditions import TextAbsent, TextPresent
+from replay.artifact.conditions import AllOf, ParamText, TextAbsent, TextPresent
 from replay.artifact.locators import (
     LabelAdjacentLocator,
     Relation,
@@ -198,10 +198,19 @@ def test_an_override_may_not_replace_a_checkpoint_with_a_tautology(base):
 
 
 def test_an_override_may_still_reword_a_checkpoint(base, northgate):
-    """The shipped Northgate override exercises this path legitimately."""
+    """The shipped Northgate override exercises this path legitimately.
+
+    The proof of success is an ``all_of``: the member id the caller asked for,
+    which is what stops one member's page answering for another, and the screen
+    text, which Northgate words differently. The override rewords the second
+    without touching the first.
+    """
     specialised = apply_override(base, northgate)
     checkpoint = next(s.checkpoint for s in specialised.steps if s.id == "s3")
-    assert checkpoint.text == "New Sub-Account"
+    assert [c.text for c in checkpoint.conditions] == [
+        ParamText(param="member_id"),
+        "New Sub-Account",
+    ]
 
 
 def test_a_known_tenant_with_no_override_runs_the_base_capability(base, tmp_path):
@@ -336,7 +345,14 @@ def test_resolving_worse_than_recorded_is_reported_as_drift(
                 ],
             ),
         },
-        checkpoints={"s3": TextPresent(text="New Sub-Account", frame_path=WORK)},
+        checkpoints={
+            "s3": AllOf(
+                conditions=[
+                    TextPresent(text=ParamText(param="member_id"), frame_path=WORK),
+                    TextPresent(text="New Sub-Account", frame_path=WORK),
+                ]
+            )
+        },
     )
 
     result = run_against(
