@@ -1,7 +1,7 @@
 # Guardrails for the automation.
 #
-# An empty domain list permits nothing. The failure mode of a missing or
-# malformed policy should be a refusal, never free rein.
+# Every list below permits nothing when it is empty or absent. The failure
+# mode of a missing or malformed policy should be a refusal, never free rein.
 
 [allowlist]
 # Hosts the automation may navigate to. Glob patterns against host:port.

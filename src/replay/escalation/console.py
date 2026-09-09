@@ -49,7 +49,11 @@ button.primary { background: #2f5d3f; border-color: #3f7a53; }
 
 SCRIPT = """
 async function resolve(id, how) {
-  await fetch(`/interventions/${id}/${how}`, { method: 'POST' });
+  // The endpoint binds the note as a query parameter, so it goes in the URL.
+  // Without this the field was declared, rendered, and never once populated.
+  const note = window.prompt('What did you do? (optional)') || '';
+  await fetch(`/interventions/${id}/${how}?note=${encodeURIComponent(note)}`,
+              { method: 'POST' });
   location.reload();
 }
 setInterval(() => { if (!document.hidden) location.reload(); }, 4000);
@@ -60,6 +64,11 @@ def _render(request: InterventionRequest) -> str:
     resolved = request.status is RequestStatus.RESOLVED
     actions = "".join(
         f"<li>{html.escape(a.kind)} — {html.escape(a.label)}</li>" for a in request.human_actions
+    )
+    note = (
+        f'<div class="meta">note: {html.escape(request.operator_note)}</div>'
+        if request.operator_note
+        else ""
     )
     buttons = (
         ""
@@ -81,6 +90,7 @@ def _render(request: InterventionRequest) -> str:
       <pre>{html.escape(request.observed[:1200]) or "(no screen text captured)"}</pre>
       {'<div class="meta">operator did:</div><ul>' + actions + "</ul>" if actions else ""}
       {'<div class="meta">resolution: ' + request.resolution.value + "</div>" if resolved else ""}
+      {note}
       {buttons}
     </div>
     """
@@ -147,6 +157,10 @@ class ConsoleEscalation:
     def escalate(self, request: InterventionRequest) -> InterventionRequest:
         event = self.queue.submit(request)
         if not event.wait(timeout=self.timeout_s):
+            # Losing this race is fine: InterventionQueue.resolve is terminal,
+            # so an operator who got there first keeps their resolution and this
+            # abort is a no-op. Which is the right way round — they fixed the
+            # session and handed it back.
             self.queue.resolve(
                 request.id,
                 Resolution.ABORTED,
