@@ -7,12 +7,14 @@ against a bank system.
 """
 
 import json
+import os
 from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
 from replay.artifact import (
+    ArtifactInvalid,
     ArtifactNotFound,
     ArtifactStore,
     CapabilityArtifact,
@@ -42,6 +44,7 @@ from replay.artifact.schema import (
     RiskClass,
     Step,
     TargetSpec,
+    unrunnable_on_a_browser,
 )
 
 RATIONALE = "Recorded from the live surface; role+name does not resolve on this control."
@@ -231,6 +234,29 @@ def test_success_must_be_verifiable():
         artifact(steps=unchecked)
 
 
+def test_a_step_id_is_constrained_like_every_other_identifier():
+    """It was the one identifier here with a length limit and no pattern.
+
+    The executor interpolates a step id into an evidence file path, so it is
+    also the one that most needed the pattern.
+    """
+    for bad in ("../oops", "s1/s2", "S1", ""):
+        with pytest.raises(ValidationError):
+            Step(id=bad, intent="Read something.", action=Action.READ, target=target())
+
+
+def test_a_capability_recorded_on_another_surface_is_refused_not_attempted():
+    """``SurfaceKind``'s docstring promises this and nothing read the field.
+
+    So it did exactly what its own docstring says is prevented: fail obscurely
+    at the first locator, against a real application.
+    """
+    assert unrunnable_on_a_browser(artifact()) is None
+
+    desktop = artifact(app=AppRef(product="MERIDIAN", entry_url_pattern="x", surface="desktop"))
+    assert "desktop" in unrunnable_on_a_browser(desktop)
+
+
 # ---------- action operands ----------
 
 
@@ -267,7 +293,7 @@ def test_an_artifact_carrying_an_uncompilable_pattern_will_not_load(tmp_path):
     document["inputs"][0]["pattern"] = r"(\d{5}"
     (tmp_path / "lookup_balance@1.0.0.json").write_text(json.dumps(document))
 
-    with pytest.raises(ValidationError, match="not a valid regular expression"):
+    with pytest.raises(ArtifactInvalid, match="not a valid regular expression"):
         ArtifactStore(tmp_path).load("lookup_balance", "1.0.0")
 
 
@@ -321,6 +347,58 @@ def test_load_without_a_version_returns_the_highest_semver(tmp_path):
 def test_missing_artifact_raises(tmp_path):
     with pytest.raises(ArtifactNotFound):
         ArtifactStore(tmp_path).load("nope")
+
+
+def test_one_unreadable_file_does_not_take_down_the_catalogue(tmp_path):
+    """Drop a file in, it is callable; delete it, it is gone — one file at a time.
+
+    A truncated ``lookup_balance`` used to propagate out of ``list_all``,
+    ``names`` and every unversioned ``load``, so it made ``open_subaccount``
+    uninvocable and ``GET /capabilities`` a 500.
+    """
+    store = ArtifactStore(tmp_path)
+    store.save(artifact(name="open_subaccount"))
+    (tmp_path / "lookup_balance@1.1.0.json").write_text('{"schema_version": "1.0", "na')
+
+    assert store.names() == ["open_subaccount"]
+    assert store.load("open_subaccount").ref == "open_subaccount@1.0.0"
+
+
+def test_saving_never_truncates_the_published_file_in_place(tmp_path, monkeypatch):
+    """The store must not manufacture the corruption its reader has to tolerate.
+
+    The destination is only ever swapped in by rename, so a write that dies
+    part-way leaves the previously published version readable.
+    """
+    store = ArtifactStore(tmp_path)
+    path = store.save(artifact())
+    original = path.read_text()
+
+    def _dying_disk(*_args, **_kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(os, "replace", _dying_disk)
+    with pytest.raises(OSError, match="No space left"):
+        store.save(artifact(title="Rewritten"), overwrite=True)
+
+    assert path.read_text() == original
+    assert list(tmp_path.iterdir()) == [path], "and no half-written file left behind"
+
+
+def test_a_second_copy_under_another_filename_is_not_the_catalogue_entry(tmp_path):
+    """`save`'s immutability guard is a check on the filename.
+
+    A differently-selectored copy of a pinned ref, dropped in under any other
+    name, was listed by the catalogue as that ref and could be returned by an
+    unversioned `load` — the immutability rule routed around with a `cp`.
+    """
+    store = ArtifactStore(tmp_path)
+    published = store.save(artifact())
+    (tmp_path / "lookup_balance-hotfix.json").write_text(published.read_text())
+
+    assert [a.ref for a in store.list_all()] == ["lookup_balance@1.0.0"]
+    with pytest.raises(ArtifactInvalid, match="belongs in"):
+        store.load_path(tmp_path / "lookup_balance-hotfix.json")
 
 
 def test_listing_is_the_catalogue(tmp_path):

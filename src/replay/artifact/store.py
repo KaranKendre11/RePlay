@@ -12,16 +12,50 @@ already the catalogue.
 from __future__ import annotations
 
 import json
+import logging
+import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from replay.artifact.schema import CapabilityArtifact, Reliability
+from pydantic import ValidationError
+
+from replay.artifact.schema import IDENTIFIER, SEMVER, ApprovalState, CapabilityArtifact
+
+if TYPE_CHECKING:
+    from replay.reliability import ReliabilityTally
 
 DEFAULT_ROOT = Path("artifacts")
+
+log = logging.getLogger(__name__)
 
 
 class ArtifactNotFound(LookupError):
     pass
+
+
+class ArtifactInvalid(ValueError):
+    """A file is present but is not the capability artifact it claims to be.
+
+    Distinct from :class:`ArtifactNotFound` on purpose. "There is nothing here"
+    and "there is something here and it is broken" call for different reactions
+    from an operator, and collapsing them into one error — or letting the raw
+    ``ValidationError`` escape — is how a single bad file gets reported as a
+    server fault rather than as the one capability that needs fixing.
+    """
+
+
+class NotApprovable(ValueError):
+    """The recorded evidence does not support approving this version.
+
+    Carries the individual reasons, because an operator refused promotion needs
+    to know what to go and do about it.
+    """
+
+    def __init__(self, ref: str, blockers: list[str]) -> None:
+        super().__init__(f"refusing to approve {ref}: " + "; ".join(blockers))
+        self.ref = ref
+        self.blockers = blockers
 
 
 class ArtifactStore:
@@ -31,12 +65,41 @@ class ArtifactStore:
     # -- paths ------------------------------------------------------------
 
     def path_for(self, name: str, version: str) -> Path:
+        """The one place a caller-supplied reference becomes a filesystem path.
+
+        ``version`` arrives raw from ``?version=`` and
+        ``--capability-version`` and was f-stringed straight in, so it was the
+        one component of the path nothing had checked. Both halves are held to
+        the patterns the schema already declares for them — a reference that
+        cannot name a capability is refused before it can name a file, which
+        also makes the endpoint answer 404 uniformly instead of leaking, in the
+        difference between 404 and 500, whether a path exists on the host.
+        """
+        if not IDENTIFIER.match(name) or not SEMVER.match(version):
+            raise ArtifactNotFound(f"{name}@{version} is not a capability reference")
         return self.root / f"{name}@{version}.json"
 
     # -- read -------------------------------------------------------------
 
     def load_path(self, path: Path | str) -> CapabilityArtifact:
-        return CapabilityArtifact.model_validate_json(Path(path).read_text())
+        """Read one artifact file, or say precisely why it is not one."""
+        path = Path(path)
+        try:
+            artifact = CapabilityArtifact.model_validate_json(path.read_text())
+        except (ValidationError, json.JSONDecodeError, UnicodeDecodeError, OSError) as bad:
+            raise ArtifactInvalid(f"{path} is not a readable capability artifact: {bad}") from bad
+        if path.name != f"{artifact.ref}.json":
+            # The filename is not decoration: it is the store's index, and
+            # `save`'s immutability guard is a check on it. A second,
+            # differently-selectored copy of a pinned ref under another
+            # filename would be listed by the catalogue as that ref and could be
+            # returned by an unversioned `load`, which is the immutability rule
+            # routed around by a `cp`.
+            raise ArtifactInvalid(
+                f"{path} declares {artifact.ref}, which belongs in {artifact.ref}.json; "
+                "a published version lives under exactly one filename"
+            )
+        return artifact
 
     def load(self, name: str, version: str | None = None) -> CapabilityArtifact:
         """Load a capability. Without a version, the highest semver wins."""
@@ -55,10 +118,25 @@ class ArtifactStore:
         return sorted(self._iter_all(), key=lambda a: (a.name, a.version_tuple))
 
     def _iter_all(self) -> Iterator[CapabilityArtifact]:
+        """Every readable artifact in the directory, skipping the ones that are not.
+
+        The catalogue is the directory — drop a file in, it is callable; delete
+        it, it is gone. One unreadable file has to mean *that* capability is
+        gone, not all of them: propagating the error would take ``list_all``,
+        ``names`` and every unversioned ``load`` down with it, so a corrupt
+        ``lookup_balance@1.1.0.json`` would make ``open_subaccount``
+        uninvocable too, and ``GET /capabilities`` a 500.
+
+        Logged rather than swallowed. A capability that silently stops being
+        offered is the same class of problem in the other direction.
+        """
         if not self.root.exists():
             return
         for path in sorted(self.root.glob("*.json")):
-            yield self.load_path(path)
+            try:
+                yield self.load_path(path)
+            except ArtifactInvalid as bad:
+                log.warning("skipping unreadable artifact: %s", bad)
 
     def names(self) -> list[str]:
         return sorted({a.name for a in self.list_all()})
@@ -72,6 +150,12 @@ class ArtifactStore:
         version is immutable — a caller that pinned ``lookup_balance@1.0.0`` must
         keep getting the same behaviour. Change means a new version.
         """
+        if artifact.tenant:
+            raise ValueError(
+                f"{artifact.ref} is a tenant specialisation, not a publishable "
+                "capability; it would be written over the base recording it was "
+                "derived from. Save the base, and the deltas as an override."
+            )
         path = self.path_for(artifact.name, artifact.version)
         if path.exists() and not overwrite:
             raise FileExistsError(
@@ -79,11 +163,24 @@ class ArtifactStore:
                 f"editing a published capability (or pass overwrite=True)"
             )
         self.root.mkdir(parents=True, exist_ok=True)
-        path.write_text(serialize(artifact))
+        _write_atomically(path, serialize(artifact))
         return path
 
-    def approve(self, name: str, version: str, reliability: Reliability) -> Path:
+    def approve(self, name: str, version: str, tallied: ReliabilityTally) -> Path:
         """Record an approval decision against an already-published version.
+
+        Takes the *evidence*, not a reliability block. It used to accept any
+        ``Reliability`` a caller handed it and write it, so
+        ``Reliability(replays=0, approval=APPROVED)`` — which passes every
+        field validator — stamped a capability as trusted unattended on no runs
+        at all, and ``RiskGate`` then believed the field. The entire promotion
+        threshold lived in ``cli.approve``: a presentation-layer check on the
+        one code path an operator happens to type, with ``promotion_blockers``
+        consulted nowhere else.
+
+        So the counters are derived here from the runs on disk, and the
+        threshold is applied here, which is where every caller routes through.
+        Approval is earned, not typed.
 
         The single sanctioned in-place edit of a published artifact, and it is
         narrow on purpose. ``save`` refuses to clobber because a caller that
@@ -101,11 +198,49 @@ class ArtifactStore:
         against, and the resulting diff is the reliability block and nothing
         else — which is what makes it reviewable.
         """
+        # Imported here rather than at module scope: reliability reads the
+        # schema this package exports, and the store is what that package
+        # imports first.
+        from replay.reliability import promotion_blockers
+
         published = self.load(name, version)
-        updated = published.model_copy(update={"reliability": reliability})
+        if tallied.ref != published.ref:
+            raise NotApprovable(
+                published.ref,
+                [f"the evidence offered is for {tallied.ref}, not {published.ref}"],
+            )
+        blockers = promotion_blockers(tallied, published)
+        if blockers:
+            raise NotApprovable(published.ref, blockers)
+
+        updated = published.model_copy(
+            update={"reliability": tallied.snapshot(approval=ApprovalState.APPROVED)}
+        )
         path = self.path_for(name, version)
-        path.write_text(serialize(updated))
+        _write_atomically(path, serialize(updated))
         return path
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    """Write via a sibling temp file and rename.
+
+    ``os.replace`` is atomic, so a crash, a kill, or a full disk part-way
+    through leaves the previous file intact instead of a truncated one — and a
+    truncated artifact is precisely the input that used to take the whole
+    catalogue down. The store's own writes should not be able to manufacture
+    the corruption the reader has to tolerate.
+
+    Sibling rather than ``/tmp`` because ``os.replace`` is only atomic within a
+    filesystem, and the temp name is dot-prefixed so a half-written artifact is
+    never picked up by the ``*.json`` scan.
+    """
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def serialize(artifact: CapabilityArtifact) -> str:
@@ -150,6 +285,12 @@ def invocation_schema(artifact: CapabilityArtifact) -> dict:
             prop["pattern"] = param.pattern
         if param.example is not None:
             prop["examples"] = [param.example]
+        if param.sensitive:
+            # Published because a calling agent otherwise has no signal that a
+            # value is regulated — that it must not be logged, cached, or shown
+            # to a user — and the catalogue is the only description of the
+            # capability it ever sees.
+            prop["sensitive"] = True
         properties[param.name] = prop
 
     return {

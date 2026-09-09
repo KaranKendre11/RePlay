@@ -12,27 +12,33 @@ without overrides genuinely fails; with overrides it succeeds and reports the
 same tiers as the deployment it was recorded on.
 """
 
+import json
+
 import pytest
+from pydantic import ValidationError
 
 from replay.artifact import (
+    ArtifactNotFound,
     ArtifactStore,
     OverrideRejected,
     OverrideStore,
+    TenantUnknown,
     VariantOverride,
     apply_override,
     specialise,
 )
-from replay.artifact.conditions import TextPresent
+from replay.artifact.conditions import TextAbsent, TextPresent
 from replay.artifact.locators import (
     LabelAdjacentLocator,
     Relation,
     RoleNameLocator,
     SelectorLocator,
 )
-from replay.artifact.schema import ParamSpec, TargetSpec
+from replay.artifact.schema import ApprovalState, ParamSpec, TargetSpec
 from replay.engine import ReplayExecutor, ReplayStatus, rebase
 from replay.evidence import EvidenceRecorder
 from replay.policy import Allowlist
+from replay.reliability import WINDOW, promotion_blockers, tally
 from replay.surface import WebSurface
 
 PERMISSIVE = Allowlist.permissive("127.0.0.1:*", "localhost:*")
@@ -160,14 +166,142 @@ def test_an_override_for_the_wrong_capability_is_refused(base):
         apply_override(base, bad)
 
 
-def test_a_tenant_with_no_override_runs_the_base_capability(base):
+def test_an_override_must_name_the_version_it_was_written_against(base):
+    """A bare name silently spans every future version.
+
+    An override built to match 1.1.0's steps would keep being applied to 2.0.0,
+    which is the one place a version bump cannot warn anybody.
+    """
+    with pytest.raises(ValidationError):
+        VariantOverride(base="lookup_balance", tenant="rogue")
+
+
+def test_an_override_is_saved_under_the_capability_it_specialises(base, tmp_path):
+    """The filename was a separate argument, never checked against ``base``."""
+    saved = OverrideStore(tmp_path).save(VariantOverride(base=base.ref, tenant="rogue"))
+    assert saved == tmp_path / "rogue" / "lookup_balance.json"
+
+
+def test_an_override_may_not_replace_a_checkpoint_with_a_tautology(base):
+    """Otherwise a replay reports success for a flow that demonstrated nothing.
+
+    ``text_absent: "zzzzz"`` is true on every screen this application has, so
+    substituting it for the checkpoint that proves the step landed turns the
+    proof into a formality — and ``_assert_contract_unchanged`` never looked at
+    checkpoints at all.
+    """
+    tautology = VariantOverride(
+        base=base.ref, tenant="rogue", checkpoints={"s3": TextAbsent(text="zzzzz")}
+    )
+    with pytest.raises(OverrideRejected, match="an override may reword a checkpoint"):
+        apply_override(base, tautology)
+
+
+def test_an_override_may_still_reword_a_checkpoint(base, northgate):
+    """The shipped Northgate override exercises this path legitimately."""
+    specialised = apply_override(base, northgate)
+    checkpoint = next(s.checkpoint for s in specialised.steps if s.id == "s3")
+    assert checkpoint.text == "New Sub-Account"
+
+
+def test_a_known_tenant_with_no_override_runs_the_base_capability(base, tmp_path):
     """The good case, and it should stay the common one.
 
     An override records somewhere a deployment diverged; the fewer of them, the
-    better the original recording was.
+    better the original recording was. A tenant says it needs no deltas by
+    having a directory and no file in it.
     """
-    assert specialise(base, "a-tenant-with-no-file", root="overrides") == base
+    (tmp_path / "a-tenant-with-no-file").mkdir()
+    assert specialise(base, "a-tenant-with-no-file", root=tmp_path) == base
     assert specialise(base, None) == base
+
+
+def test_an_unknown_tenant_is_refused_rather_than_silently_ignored(base, tmp_path):
+    """The operator believes they changed behaviour, and nothing happened.
+
+    ``--tenant nothgate`` is a typo and ``replay serve`` started outside the
+    repo root has no overrides directory at all. Both used to run the *base*
+    capability against the tenant's deployment, while the CLI printed
+    ``tenant northgate``.
+    """
+    (tmp_path / "northgate").mkdir()
+
+    with pytest.raises(TenantUnknown, match="nothgate"):
+        specialise(base, "nothgate", root=tmp_path)
+
+    with pytest.raises(TenantUnknown, match="is the overrides root right"):
+        specialise(base, "northgate", root=tmp_path / "wrong-cwd")
+
+
+# ---------- a tenant name is not a path ----------
+
+
+def test_a_tenant_may_not_name_a_file_outside_the_overrides_root(base, tmp_path):
+    """``tenant`` reaches the filesystem raw, from ``--tenant`` and the HTTP body.
+
+    ``Path("overrides") / "/tmp/x"`` is absolute — pathlib discards the left
+    operand — so anyone who could get a JSON file onto the box chose which
+    override was applied, and an override chooses the entry URL, the
+    checkpoints and the selector an irreversible step clicks.
+    """
+    planted = tmp_path / "planted"
+    planted.mkdir()
+    (planted / "lookup_balance.json").write_text(
+        json.dumps(
+            {
+                "base": base.ref,
+                "tenant": "northgate",
+                "entry_url_pattern": "http://attacker.invalid/",
+            }
+        )
+    )
+
+    for escape in (str(planted), "../planted", "."):
+        with pytest.raises(OverrideRejected, match="is not a tenant name"):
+            specialise(base, escape, root=tmp_path / "overrides")
+
+
+def test_a_version_is_a_semver_before_it_is_a_filename(tmp_path):
+    """``?version=`` and ``--capability-version`` were f-stringed into a path."""
+    with pytest.raises(ArtifactNotFound, match="not a capability reference"):
+        ArtifactStore(tmp_path).load("lookup_balance", "../../policy")
+
+
+# ---------- evidence belongs to the deployment it was gathered on ----------
+
+
+def test_a_tenant_replay_is_not_evidence_about_the_base_capability(base, northgate, tmp_path):
+    """A different host, mount point, selectors and checkpoint is a different thing.
+
+    Five clean ``--tenant northgate`` replays used to satisfy every promotion
+    rule for the base ``lookup_balance``, which had never been run against that
+    deployment — so ``replay approve`` would stamp APPROVED on evidence
+    gathered somewhere else entirely.
+    """
+    from test_reliability import clean_history
+
+    specialised = apply_override(base, northgate)
+    assert specialised.ref == f"{base.ref}#northgate"
+
+    clean_history(specialised.ref, tmp_path)
+
+    assert tally(tmp_path, specialised.ref).replays == WINDOW
+    assert tally(tmp_path, base.ref).replays == 0
+    assert promotion_blockers(tally(tmp_path, base.ref), base), "the base has no track record"
+
+
+def test_the_base_capabilitys_approval_does_not_carry_over_to_a_tenant(base, northgate):
+    """And the reverse: approved against the base is not approved against Northgate."""
+    approved = base.model_copy(
+        update={"reliability": base.reliability.model_copy(update={"approval": "approved"})}
+    )
+    assert apply_override(approved, northgate).reliability.approval is ApprovalState.DRAFT
+
+
+def test_a_specialised_artifact_may_not_be_published(base, northgate, tmp_path):
+    """It would be written over the base recording it was derived from."""
+    with pytest.raises(ValueError, match="tenant specialisation"):
+        ArtifactStore(tmp_path).save(apply_override(base, northgate))
 
 
 # ---------- drift ----------

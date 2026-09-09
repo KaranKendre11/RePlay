@@ -16,6 +16,14 @@ What is deliberately **not** redacted: short digit strings. A member ID is five
 digits and so is a great deal of harmless text, and a redactor that eats the
 identifiers in every log makes debugging impossible while protecting nothing —
 the ID is the argument the caller passed in, not a secret.
+
+The line between the two is drawn at ten digits *in one run*, and separators are
+only tolerated in the four-digit grouping a card number is written in. Both
+halves are load-bearing. The shipped app numbers its accounts in ten digits, so
+a thirteen-digit floor missed every account number on every screen; and three
+adjacent five-digit member IDs are fifteen digits with spaces between them, so a
+rule that counted digits across separators ate exactly the identifiers this
+module promises to leave alone.
 """
 
 from __future__ import annotations
@@ -25,10 +33,16 @@ from collections.abc import Iterable
 
 REDACTED = "«redacted»"
 
-#: Shapes worth catching wherever they appear. Ordered longest-first so a card
-#: number is not partially eaten by the SSN rule.
+#: Shapes worth catching wherever they appear. Ordered longest-first so an
+#: account number is not partially eaten by the SSN rule.
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("card", re.compile(r"\b(?:\d[ -]?){13,19}\b")),
+    # Two shapes, because one expression counting digits across separators got
+    # both directions wrong. It ate ``12345 67890 24680`` — three member IDs —
+    # as a single fifteen-digit number, and it missed a twenty-digit run
+    # entirely, since with twenty consecutive digits no thirteen-to-nineteen
+    # digit slice ends on a word boundary. Pad a card number and it walked
+    # straight through.
+    ("account", re.compile(r"\b(?:\d{4}[ -]){2,}\d{2,}\b|\b\d{10,}\b")),
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
     ("bearer", re.compile(r"\b(?:sk|pk|api|token)[-_][A-Za-z0-9_\-]{16,}\b", re.IGNORECASE)),
     # The final label must be letters. A capability ref is ``name@version``, and

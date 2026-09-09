@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import time
+from dataclasses import replace
 from typing import Any
 
 from playwright.sync_api import Error as PlaywrightError
@@ -80,6 +81,7 @@ from replay.surface.base import (
     TargetNotFound,
 )
 from replay.surface.inventory import (
+    CELL_STEP,
     COLLECT_JS,
     MAX_CANDIDATES,
     Candidate,
@@ -134,7 +136,7 @@ class WebSurface:
         self._default_dialog = default_dialog
         self._pending_dialog: DialogPolicy | None = None
         self._dialogs: list[str] = []
-        self._last_status: int | None = None
+        self._status_by_url: dict[str, int] = {}
         self._controller = Controller.AUTOMATION
         # No allowlist means no restriction, which is only ever acceptable in a
         # test. Production callers pass one; the CLI always does.
@@ -238,33 +240,88 @@ class WebSurface:
             dialog.accept() if policy is DialogPolicy.ACCEPT else dialog.dismiss()
 
     def _note_response(self, response: Any) -> None:
-        """Remember the status of the most recent document navigation.
+        """Remember each document navigation's status, against the URL it landed on.
 
         Needed to tell a 500 apart from a page that merely looks empty — the
         difference between a hard failure and a business outcome.
+
+        Per URL rather than one "most recent": under a ``<frameset>`` the top
+        document and every child are separate navigations racing each other, so
+        last-writer-wins reported the frameset's 200 while the work frame showed
+        SESSION EXPIRED behind a 440. Keyed by URL because that is what
+        ``Frame.url`` answers with, and because a detached frame then stops
+        mattering rather than keeping a stale status alive.
         """
         with contextlib.suppress(PlaywrightError):
             if response.request.is_navigation_request():
-                self._last_status = response.status
+                self._status_by_url[response.url] = response.status
+
+    def _content_status(self) -> int | None:
+        """The status of the frame whose content is being judged.
+
+        A frameset document's own 200 says nothing — it is a frameset, there is
+        nothing in it to fail — so only frames carrying content are considered.
+        Among those a failure beats a success: whichever frame is saying
+        something went wrong is the one the caller is asking about.
+        """
+        statuses: list[int] = []
+        for path in self._frame_paths():
+            try:
+                frame = self.frame_for(path)
+                if not self._has_body(frame):
+                    continue
+            except (FrameNotFound, PlaywrightError, PlaywrightTimeout):
+                continue
+            status = self._status_by_url.get(frame.url)
+            if status is not None:
+                statuses.append(status)
+        failed = [s for s in statuses if s >= 400]
+        if failed:
+            return failed[0]
+        return statuses[-1] if statuses else None
 
     # -- frames -----------------------------------------------------------
 
-    def frame_for(self, path: list[str] | None) -> Frame:
-        """Walk a frame path from the top document.
+    @staticmethod
+    def _children(frame: Frame) -> list[Frame]:
+        """Attached child frames, in document order.
 
-        Detached frames are skipped. When the top document re-navigates,
-        Playwright keeps the previous child frames in ``child_frames`` for a
-        moment while the replacements attach; picking one of those yields
-        "Frame was detached" on the next query. Preferring an attached frame
-        with the same name — and letting :meth:`resolve` poll — turns that race
-        into a short wait instead of a spurious failure.
+        Detached ones are skipped. When the top document re-navigates,
+        Playwright keeps the previous children in ``child_frames`` for a moment
+        while the replacements attach; picking one of those yields "Frame was
+        detached" on the next query. Dropping them here — and letting
+        :meth:`resolve` poll — turns that race into a short wait instead of a
+        spurious failure.
+
+        The single ordering :meth:`_frame_paths` and :meth:`frame_for` both
+        count against, which is what makes a positional path token mean the
+        same thing to the one that writes it and the one that reads it.
         """
+        return [f for f in frame.child_frames if not f.is_detached()]
+
+    @staticmethod
+    def _token(index: int, frame: Frame) -> str:
+        """How one frame is named inside a frame path.
+
+        An unnamed frame used to be enumerated as ``"(unnamed)"`` and then
+        looked up by ``name``, which never matched — so it was listed and then
+        permanently unreachable, and since every consumer swallows
+        :class:`FrameNotFound` it was reported as not existing at all. A
+        position resolves; a placeholder does not.
+        """
+        return frame.name or f"#{index}"
+
+    def frame_for(self, path: list[str] | None) -> Frame:
+        """Walk a frame path from the top document."""
         frame = self.page.main_frame
         for name in path or []:
-            named = [f for f in frame.child_frames if f.name == name]
-            child = next((f for f in named if not f.is_detached()), None)
+            children = self._children(frame)
+            child = next(
+                (f for i, f in enumerate(children) if name in (f.name, self._token(i, f))),
+                None,
+            )
             if child is None:
-                available = [f.name for f in frame.child_frames if not f.is_detached()]
+                available = [self._token(i, f) for i, f in enumerate(children)]
                 raise FrameNotFound(f"no attached frame named {name!r}; available: {available}")
             frame = child
         return frame
@@ -299,9 +356,8 @@ class WebSurface:
 
         def walk(frame: Frame, prefix: list[str]) -> None:
             paths.append(prefix)
-            for child in frame.child_frames:
-                if not child.is_detached():
-                    walk(child, [*prefix, child.name or "(unnamed)"])
+            for index, child in enumerate(self._children(frame)):
+                walk(child, [*prefix, self._token(index, child)])
 
         walk(self.page.main_frame, [])
         return paths
@@ -314,17 +370,24 @@ class WebSurface:
         Explicit value masking cannot help here: a screenshot is pixels, and a
         password sitting visibly in a field would be persisted in full by
         evidence that is otherwise carefully redacted.
+
+        "Before any screenshot" is meant literally: if the control cannot be
+        found when the screen is photographed, no photograph is taken. Ordinary
+        tenant drift is enough to move a target, and the alternative was a
+        shorter mask list and an unmasked screenshot written with no note.
         """
         self._masked.append(target)
 
-    def _mask_locators(self) -> list[PWLocator]:
+    def _mask_locators(self) -> tuple[list[PWLocator], list[str]]:
+        """The masks to apply, and the ones that could not be resolved."""
         found: list[PWLocator] = []
+        unresolved: list[str] = []
         for target in self._masked:
             try:
                 found.append(self.resolve(target, timeout_ms=500).handle)
-            except (TargetNotFound, FrameNotFound, PlaywrightError):
-                continue
-        return found
+            except (TargetNotFound, FrameNotFound, PlaywrightError) as exc:
+                unresolved.append(f"{target.description!r} ({type(exc).__name__})")
+        return found, unresolved
 
     def observe(self, *, screenshot: bool = True) -> Observation:
         views: list[FrameView] = []
@@ -336,19 +399,28 @@ class WebSurface:
                 continue
 
         shot: bytes | None = None
+        note: str | None = None
         if screenshot:
-            try:
-                shot = self.page.screenshot(full_page=False, mask=self._mask_locators())
-            except PlaywrightError:
-                shot = None
+            masks, unresolved = self._mask_locators()
+            if unresolved:
+                note = (
+                    "screenshot withheld: could not cover " + ", ".join(unresolved) + "; a "
+                    "screenshot is pixels no redactor can scrub afterwards, so none was taken"
+                )
+            else:
+                try:
+                    shot = self.page.screenshot(full_page=False, mask=masks)
+                except PlaywrightError as exc:
+                    note = f"screenshot failed: {type(exc).__name__}"
 
         return Observation(
             url=self.page.url,
             title=self._title(),
             frames=[v for v in views if v.aria],
             screenshot=shot,
-            http_status=self._last_status,
+            http_status=self._content_status(),
             dialogs_seen=list(self._dialogs),
+            note=note,
         )
 
     @staticmethod
@@ -359,21 +431,24 @@ class WebSurface:
         accessibility snapshot means waiting out the full locator timeout every
         single time — which turned a four-step replay into a 26-second one
         before this check existed. ``count()`` does not wait.
+
+        Failures are not answered here. "This frame has no body" and "this frame
+        cannot be asked" are different facts, and :meth:`text_of` is required to
+        tell them apart.
         """
-        try:
-            return frame.locator("body").count() > 0
-        except (PlaywrightError, PlaywrightTimeout):
-            return False
+        return frame.locator("body").count() > 0
 
     def _aria(self, frame: Frame) -> str:
         """Accessibility snapshot of one frame.
 
         A frameset document legitimately yields nothing; its children carry the
-        content.
+        content. Nothing here is load-bearing enough to raise over: a frame that
+        cannot be snapshotted is simply left out of the observation, and its
+        absence from ``frames`` is itself visible.
         """
-        if not self._has_body(frame):
-            return ""
         try:
+            if not self._has_body(frame):
+                return ""
             return frame.locator("body").aria_snapshot(timeout=2_000)
         except (PlaywrightError, PlaywrightTimeout):
             return ""
@@ -385,13 +460,26 @@ class WebSurface:
             return ""
 
     def text_of(self, path: list[str] | None = None) -> str:
+        """The visible text of one frame. Empty only when there is none.
+
+        Every failure used to come back as ``""`` — a missing frame, a dead
+        browser, a locator timeout — and ``TextAbsent`` reads ``text not in ""``
+        as ``True``. So a closed surface reported a live-looking URL and
+        satisfied every "error text is absent" assertion in the taxonomy, which
+        is precisely the misdiagnosis :class:`~replay.surface.base.Surface`
+        says this method exists to prevent.
+
+        A surface that cannot look now says so, and
+        :meth:`evaluate` turns that into a checkpoint that fails.
+        """
+        frame = self.frame_for(path)  # FrameNotFound is already a SurfaceError.
         try:
-            frame = self.frame_for(path)
             if not self._has_body(frame):
                 return ""
             return frame.locator("body").inner_text(timeout=2_000)
-        except (PlaywrightError, PlaywrightTimeout, FrameNotFound):
-            return ""
+        except (PlaywrightError, PlaywrightTimeout) as exc:
+            label = "/".join(path) if path else "(main)"
+            raise SurfaceError(f"cannot read frame {label}: {type(exc).__name__}") from exc
 
     def inventory(self) -> list[Candidate]:
         """Enumerate what is on screen, each with a durable locator ladder.
@@ -471,12 +559,14 @@ class WebSurface:
                 return frame.locator(f"xpath={expr}")
 
             case AnchoredTextLocator():
+                # Every match is returned, not just the one asked for: resolve()
+                # needs the count to report ambiguity, and picks with _nth_of.
                 if spec.relation is not Relation.SAME_ROW:
                     return None
                 anchor = xpath_literal(spec.anchor)
                 expr = (
                     f"//tr[td[normalize-space()={anchor}] or th[normalize-space()={anchor}]]"
-                    f"/td[{spec.offset + 1}]"
+                    f"/{CELL_STEP}[{spec.offset + 1}]"
                 )
                 return frame.locator(f"xpath={expr}")
 
@@ -489,6 +579,18 @@ class WebSurface:
                 return None
 
         return None
+
+    @staticmethod
+    def _nth_of(spec: Locator) -> int:
+        """Which of several matches this strategy asked for.
+
+        ``AnchoredTextLocator.nth`` was declared, validated and then ignored:
+        the ladder took ``locator.first`` regardless, so a member with two
+        SAVINGS accounts had the first account's balance reported as the
+        second's, with the run still succeeding. Strategies that cannot be
+        ambiguous by construction do not declare it and take 0.
+        """
+        return int(getattr(spec, "nth", 0))
 
     def resolve(self, target: TargetSpec, *, timeout_ms: int = 5_000) -> Resolution:
         """Try the ladder in order until something matches.
@@ -520,16 +622,19 @@ class WebSurface:
                 except PlaywrightError as exc:
                     attempts.append(f"{spec.kind}: {type(exc).__name__}")
                     continue
-                if matches:
+                nth = self._nth_of(spec)
+                if matches > nth:
                     return Resolution(
                         tier=spec.tier,
                         strategy_index=index,
                         kind=spec.kind,
                         matches=matches,
                         frame_path=list(target.frame_path),
-                        handle=locator.first,
+                        handle=locator.nth(nth),
                     )
-                attempts.append(f"{spec.kind}: 0 matches")
+                # Asking for match 2 of 1 is a miss, not a reason to silently
+                # take a different element.
+                attempts.append(f"{spec.kind}: {matches} matches, wanted index {nth}")
 
             if time.monotonic() >= deadline:
                 raise TargetNotFound(target, attempts)
@@ -547,12 +652,90 @@ class WebSurface:
         on_dialog: DialogPolicy | None = None,
         timeout_ms: int = 10_000,
     ) -> ActionOutcome:
+        """Perform one action, answering at most this action's own dialogs.
+
+        ``on_dialog`` is armed for the duration of this call and disarmed on the
+        way out, however it ends. An action that armed ACCEPT and then failed
+        used to leave it armed, so the *next* dialog — a confirm() nobody
+        instructed us to accept, possibly one an operator raised during a
+        handoff on this same live session — was answered OK. Which is the one
+        thing this module says it never does.
+        """
         self._require_control()
         if on_dialog is not None:
             self._pending_dialog = on_dialog
+        try:
+            outcome = self._act(
+                action,
+                target,
+                value,
+                expect_navigation=expect_navigation,
+                timeout_ms=timeout_ms,
+            )
+        finally:
+            # Only what this call armed. ACCEPT_DIALOG and answer_next_dialog()
+            # deliberately arm the *next* action and must survive this one.
+            if on_dialog is not None:
+                self._pending_dialog = None
+        return self._check_landing(outcome)
 
+    def _check_landing(self, outcome: ActionOutcome) -> ActionOutcome:
+        """Check where the action landed, not merely where it asked to go.
+
+        ``check_navigation`` used to run for ``Action.NAVIGATE`` and nothing
+        else, so a click that followed a link or submitted a form reached any
+        route unchecked — which left the ``denied_routes`` in ``policy.toml``
+        constraining only URLs somebody had typed. Worst in discovery, where the
+        model is handed an enumerated list of links and picks one by index. A
+        landing URL is knowable only afterwards, so it is checked afterwards,
+        and for every action rather than for navigation alone.
+
+        The fetch cannot be un-made. What can be stopped is the run continuing
+        on that page, so the outcome becomes a refusal *and* the session is
+        parked on a blank page: ``observe``, ``text_of``, ``inventory`` and
+        ``html_of`` carry no check of their own, and an off-limits screen must
+        not reach a screenshot, an evidence file or a model prompt merely
+        because nobody happened to act again.
+        """
+        if self.allowlist is None:
+            return outcome
+        for url in {self.page.url, *(frame.url for frame in self.page.frames)}:
+            if not url.startswith("http"):
+                continue  # about:blank and friends are not somewhere we went.
+            try:
+                self.allowlist.check_navigation(url)
+            except PolicyRefused as refusal:
+                with contextlib.suppress(PlaywrightError):
+                    self.page.goto("about:blank")
+                # The action's own dialogs are kept; anything it read is not. A
+                # value read off an off-limits page is exactly what must not
+                # travel any further.
+                return replace(
+                    outcome,
+                    ok=False,
+                    read_value=None,
+                    navigated=False,
+                    error=str(refusal),
+                    note=(
+                        "the page had already loaded when this was caught; the session has "
+                        "been left blank so nothing off-limits is observed or recorded"
+                    ),
+                )
+        return outcome
+
+    def _act(
+        self,
+        action: Action,
+        target: TargetSpec | None = None,
+        value: str | None = None,
+        *,
+        expect_navigation: bool = False,
+        timeout_ms: int = 10_000,
+    ) -> ActionOutcome:
         # Enforced here rather than at the call site, so discovery, replay and
         # recovery rules are all covered without knowing the allowlist exists.
+        # This is the half that can be checked before acting; where the action
+        # actually lands is checked afterwards, in _check_landing.
         if self.allowlist is not None:
             try:
                 self.allowlist.check_action(action)
@@ -568,7 +751,7 @@ class WebSurface:
             if action is Action.NAVIGATE:
                 response = self.page.goto(str(value), timeout=timeout_ms)
                 if response is not None:
-                    self._last_status = response.status
+                    self._status_by_url[response.url] = response.status
                 return self._done(action, True, navigated=True, since=before)
 
             if action in (Action.ACCEPT_DIALOG, Action.DISMISS_DIALOG):
@@ -605,6 +788,7 @@ class WebSurface:
 
             note: str | None = None
             navigated = False
+            read: str | None = None
 
             if expect_navigation:
                 # expect_navigation is not merely a wait: it is what makes
@@ -614,13 +798,20 @@ class WebSurface:
                 # plainly changed. Measured, not assumed.
                 own = self.frame_for(target.frame_path)
                 destination = self._navigation_frame(handle, own)
+                acted = False
                 try:
                     with destination.expect_navigation(timeout=timeout_ms):
                         read = perform()
+                        acted = True
                     navigated = True
                 except PlaywrightTimeout:
-                    # The action itself succeeded; the page just did not move.
-                    # That is information, not a failure.
+                    # Two very different timeouts arrive here: the click itself
+                    # timing out, and the click working while nothing moved.
+                    # Only the second is information rather than a failure, and
+                    # reporting the first as ok=True would mean a step that
+                    # never happened is recorded as having happened.
+                    if not acted:
+                        raise
                     note = self._explain_stalled_navigation(before)
             else:
                 read = perform()
@@ -687,10 +878,10 @@ class WebSurface:
         """
         match condition:
             case TextPresent():
-                return condition.text in self._scan_text(condition.frame_path)
+                return self._text_matches(condition.frame_path, condition.text, present=True)
 
             case TextAbsent():
-                return condition.text not in self._scan_text(condition.frame_path)
+                return self._text_matches(condition.frame_path, condition.text, present=False)
 
             case RoleNameVisible():
                 for path in self._frame_paths():
@@ -716,7 +907,7 @@ class WebSurface:
                 return self._element_state_matches(condition)
 
             case HttpStatusIs():
-                return self._last_status == condition.status
+                return self._content_status() == condition.status
 
             case AllOf():
                 return all(self.evaluate(c) for c in condition.conditions)
@@ -729,20 +920,42 @@ class WebSurface:
 
         raise SurfaceError(f"unsupported condition {condition!r}")
 
+    def _text_matches(self, path: list[str] | None, text: str, *, present: bool) -> bool:
+        """Is this text on screen? ``False`` when the surface cannot tell.
+
+        Both polarities answer ``False``, which is the whole point: "the error
+        banner is absent" must not be satisfied by a surface that could not
+        look for it. A checkpoint nobody can evaluate fails.
+        """
+        try:
+            found = text in self._scan_text(path)
+        except SurfaceError:
+            return False
+        return found is present
+
     def _scan_text(self, path: list[str] | None) -> str:
         if path is not None:
             return self.text_of(path)
         return "\n".join(self.text_of(p) for p in self._frame_paths())
 
     def _element_state_matches(self, condition: ElementIs) -> bool:
+        """Whether some frame holds this element in this state.
+
+        Both call sites of :meth:`_build` own the errors a built locator can
+        raise. ``count()`` used to sit outside the ``try`` here, so a malformed
+        selector left ``evaluate`` as a raw ``PlaywrightError`` from one call
+        site and as "0 matches" from the other. A selector that cannot be
+        parsed is a selector that matches nothing.
+        """
+        nth = self._nth_of(condition.locator)
         for path in self._frame_paths():
             try:
                 locator = self._build(self.frame_for(path), condition.locator)
-            except FrameNotFound:
+                if locator is None or locator.count() <= nth:
+                    continue
+            except (FrameNotFound, PlaywrightError, PlaywrightTimeout):
                 continue
-            if locator is None or not locator.count():
-                continue
-            element = locator.first
+            element = locator.nth(nth)
             try:
                 match condition.state:
                     case ElementState.VISIBLE:

@@ -10,6 +10,12 @@ saw; a model that can only pick index 6 can only act on things that were
 genuinely on screen, and the surface — not the model — decides how index 6 will
 be named in the artifact.
 
+The schemas are not marked ``strict``. Strict mode would require every optional
+property to be listed as required and typed as nullable, which trades a missing
+``parameter_name`` for an explicit ``null`` one — the same shape, arriving more
+often. So the vocabulary is enforced here instead, by :func:`validate`, against
+the schema the model was actually given.
+
 Two calls carry declarations rather than actions. ``type_text`` can mark its
 value as a runtime parameter, and ``read_value`` names an output. Those are the
 model saying what the *capability* needs and returns, which is exactly the
@@ -142,3 +148,51 @@ TOOLS: list[dict] = [
 
 TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOLS)
 TERMINAL_TOOLS = frozenset({"finish", "give_up"})
+
+_SCHEMAS = {t["function"]["name"]: t["function"]["parameters"] for t in TOOLS}
+
+
+def _has_type(value: Any, declared: str) -> bool:
+    # bool is a subclass of int, so an unguarded isinstance would accept True
+    # as an index and 6 as expect_navigation.
+    if declared == "boolean":
+        return isinstance(value, bool)
+    if declared == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, str)
+
+
+def validate(call: ToolCall) -> str | None:
+    """Why this call cannot be acted on, in words the model can use, or None.
+
+    The model is an untrusted input source. Nothing on the provider side
+    guarantees that a returned call is even in this vocabulary, let alone that
+    its arguments have the declared types: a hallucinated tool name, a
+    ``parameter_name`` that arrives as an object, a JSON ``null`` where a string
+    was required — all are shapes the API will happily hand back.
+
+    Checked here, against the same schema the model was given, so there is one
+    definition of a well-formed call rather than one per call site. Left to the
+    call sites, a null ``text`` silently becomes the four characters ``"None"``,
+    typed into a live form and recorded into the artifact as the example.
+
+    Returns a sentence rather than raising because the loop feeds bad arguments
+    back as a line in the action log; a malformed call is a mistake to correct,
+    the same as a bad index.
+    """
+    schema = _SCHEMAS.get(call.name)
+    if schema is None:
+        return f"{call.name!r} is not one of the tools you may call"
+
+    properties: dict[str, dict] = schema["properties"]
+    for key, value in call.arguments.items():
+        if key not in properties:
+            return f"{call.name} takes no argument called {key!r}"
+        declared = properties[key]["type"]
+        if not _has_type(value, declared):
+            return f"{key} must be a {declared}, not {type(value).__name__}"
+
+    missing = [key for key in schema["required"] if key not in call.arguments]
+    if missing:
+        return f"{call.name} requires {', '.join(missing)}"
+    return None

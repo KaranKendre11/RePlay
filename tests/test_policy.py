@@ -11,6 +11,8 @@ the risk gate inside the executor, so nothing can route around them by calling a
 lower-level method — which is the way this kind of control usually fails.
 """
 
+import json
+
 import pytest
 
 from replay.artifact import ArtifactStore
@@ -50,10 +52,60 @@ def test_deny_beats_allow():
         both.check_navigation("http://127.0.0.1:8080/transfer/new")
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8080/member/../admin/users",
+        "http://127.0.0.1:8080/member/%2e%2e/admin/users",
+        "http://127.0.0.1:8080/member/./../../wire/send",
+    ],
+)
+def test_dot_segments_cannot_walk_around_a_deny_rule(url):
+    """The browser resolves the path; the guardrail has to resolve it first.
+
+    ``fnmatch``'s ``*`` crosses ``/`` and both ends are anchored, so these
+    matched the allow rule ``/member/*``, missed the deny rule, and were then
+    fetched as ``/admin/users``.
+    """
+    with pytest.raises(PolicyRefused, match="deny rule"):
+        Allowlist.from_file("policy.toml").check_navigation(url)
+
+
+def test_userinfo_and_case_are_not_part_of_the_host():
+    """``netloc`` carries both, and a glob will happily match on either."""
+    listed = Allowlist(domains=("127.0.0.1:*",), routes=("*",))
+    with pytest.raises(PolicyRefused, match="not in the allowlist"):
+        listed.check_navigation("http://127.0.0.1:@evil.com/")
+    Allowlist(domains=("localhost:8080",), routes=("*",)).check_navigation("http://LOCALHOST:8080/")
+
+
 def test_an_empty_allowlist_permits_nothing():
     """Never "everything". A misconfiguration must fail closed."""
     with pytest.raises(PolicyRefused, match="no domains are allowlisted"):
         Allowlist().check_navigation("http://127.0.0.1:8080/")
+
+
+def test_an_empty_action_list_permits_nothing():
+    """Both "permit nothing" and "key absent" used to mean all nine actions.
+
+    An empty list is falsy, so the one list an operator is most likely to leave
+    out was the one that granted the most — against policy.toml's own promise
+    that anything absent from it is refused at the point of action.
+    """
+    for empty in ({"domains": ["*"], "actions": []}, {"domains": ["*"]}):
+        listed = Allowlist.from_dict(empty)
+        with pytest.raises(PolicyRefused, match="not permitted"):
+            listed.check_action(Action.CLICK)
+
+
+def test_an_action_is_refused_when_no_domain_is_allowlisted():
+    """permits_nothing was consulted by navigation only.
+
+    So a config that allowlisted no domain at all still permitted clicking and
+    typing on whatever page happened to already be open.
+    """
+    with pytest.raises(PolicyRefused, match="no domains are allowlisted"):
+        Allowlist(actions=frozenset(Action)).check_action(Action.CLICK)
 
 
 def test_an_unpermitted_action_type_is_refused():
@@ -221,8 +273,6 @@ def test_the_permitted_capability_still_runs(meridian_server, write_capability, 
 
 def test_the_guardrails_in_force_are_recorded_with_the_run(meridian_server, read_only, tmp_path):
     """So a reviewer can see what the rules were, not just what happened."""
-    import json
-
     with (
         WebSurface(allowlist=PERMISSIVE) as surface,
         EvidenceRecorder("policy-log", root=tmp_path) as recorder,
@@ -245,7 +295,9 @@ def test_the_guardrails_in_force_are_recorded_with_the_run(meridian_server, read
 @pytest.mark.parametrize(
     ("raw", "shape"),
     [
-        ("card 4111 1111 1111 1111 on file", "card"),
+        ("card 4111 1111 1111 1111 on file", "account"),
+        ("account 0004421187 balance 4,211.03", "account"),
+        ("padded 00044211870000442118", "account"),
         ("ssn 123-45-6789", "ssn"),
         ("token sk-abcdefghijklmnopqrstuvwx", "bearer"),
         ("mail a.person@example.com", "email"),
@@ -262,13 +314,25 @@ def test_regulated_shapes_are_scrubbed_wherever_they_appear(raw, shape):
     assert shape in Redactor().findings(raw)
 
 
-def test_identifiers_are_deliberately_not_redacted():
+@pytest.mark.parametrize(
+    "harmless",
+    [
+        "member 12345 branch 0042",
+        # Three of the shipped app's actual members, side by side. Fifteen
+        # digits with spaces between them, which a rule counting digits across
+        # separators collapsed into one «redacted».
+        "12345 67890 24680",
+        "balance 4,211.03",
+    ],
+)
+def test_identifiers_are_deliberately_not_redacted(harmless):
     """A member ID is the caller's argument, not a secret.
 
     A redactor that eats every identifier makes debugging impossible while
     protecting nothing.
     """
-    assert Redactor().scrub("member 12345 branch 0042") == "member 12345 branch 0042"
+    assert Redactor().scrub(harmless) == harmless
+    assert Redactor().findings(harmless) == []
 
 
 @pytest.mark.parametrize(
@@ -317,6 +381,40 @@ def test_masks_can_be_added_after_construction():
     assert REDACTED in redactor.scrub("token s3cret")
     redactor.add(None)
     assert redactor.masks == ["s3cret"]
+
+
+def test_a_number_survives_the_evidence_recorder(tmp_path):
+    """Redaction reads the structure, not the serialized text.
+
+    Scrubbing the JSON text matched the card pattern against unquoted number
+    literals — and epoch-milliseconds is exactly thirteen digits — so the
+    marker went into the middle of a number, the reparse failed, and the
+    exception took the run out through :meth:`event`, leaving the evidence file
+    the recorder exists to produce empty.
+    """
+    with EvidenceRecorder("number-evidence", root=tmp_path) as rec:
+        rec.event("step_finished", step_id="s1", finished_at_ms=1757251200000)
+
+    event = json.loads((rec.dir / "run.jsonl").read_text().splitlines()[0])
+    assert event["finished_at_ms"] == 1757251200000
+
+
+def test_a_mask_needing_json_escaping_still_never_reaches_the_evidence(tmp_path):
+    """The other half of the same bug.
+
+    A mask is matched literally. Against escaped text a secret holding a quote,
+    a backslash or a newline exists only as ``pa\\"ss``, so the replace never
+    fired and the secret was written out in full.
+    """
+    secret = 'pa"ss word / back\\slash / two\nlines'
+    with EvidenceRecorder("escaped-secret", root=tmp_path, mask=[secret]) as rec:
+        rec.event("observed", screen=f"user typed {secret}", nested={"a": [{"b": secret}]})
+        rec.result({secret: secret})
+
+    written = "\n".join(p.read_text() for p in rec.dir.rglob("*") if p.is_file())
+    for fragment in ('pa\\"ss word', "back\\\\slash", "two\\nlines"):
+        assert fragment not in written
+    assert REDACTED in written
 
 
 def test_a_sensitive_field_is_covered_in_screenshots(meridian_server, read_only, tmp_path):

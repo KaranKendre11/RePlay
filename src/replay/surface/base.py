@@ -112,6 +112,9 @@ class Observation:
 
     Carries no markup. ``frames`` is the perceptual payload; ``screenshot`` is
     the visual channel for a model that benefits from seeing the screen.
+
+    Everything here describes the current screen except ``dialogs_seen``, which
+    could not: see its own note.
     """
 
     url: str
@@ -120,6 +123,26 @@ class Observation:
     screenshot: bytes | None = None
     http_status: int | None = None
     dialogs_seen: list[str] = field(default_factory=list)
+    """Every native dialog this session has raised, oldest first.
+
+    The one field that is history rather than a snapshot, and deliberately so.
+    A native dialog is modal: it is answered before control returns, so it is
+    never on screen at the moment anything observes, and "the dialogs showing
+    right now" would be an empty list forever. What a caller actually needs to
+    know is that one was raised and how it was answered — which is why
+    :class:`ActionOutcome` carries the window belonging to a single action, and
+    this carries the run.
+
+    Read it as history, never as "a dialog is open". Nothing here means the
+    surface is currently blocked."""
+    note: str | None = None
+    """Why this observation is less than it should be.
+
+    The motivating case is a withheld screenshot: a mask that could not be
+    applied must not quietly produce an unmasked one, and "there is no
+    screenshot" is only useful to whoever reads the evidence if it comes with
+    the reason. Carried into ``render`` and ``to_dict`` so the model and the
+    evidence file are told the same thing."""
 
     def render(self, *, max_chars: int = 6000) -> str:
         """Text rendering for a model prompt or a log.
@@ -130,6 +153,8 @@ class Observation:
         blocks = [f"URL: {self.url}", f"TITLE: {self.title}"]
         if self.http_status is not None:
             blocks.append(f"HTTP: {self.http_status}")
+        if self.note is not None:
+            blocks.append(f"NOTE: {self.note}")
         if self.dialogs_seen:
             blocks.append("DIALOGS: " + " | ".join(self.dialogs_seen))
         for frame in self.frames:
@@ -146,6 +171,7 @@ class Observation:
             "title": self.title,
             "http_status": self.http_status,
             "dialogs_seen": list(self.dialogs_seen),
+            "note": self.note,
             "frames": [{"path": f.path, "url": f.url, "aria": f.aria} for f in self.frames],
         }
 
