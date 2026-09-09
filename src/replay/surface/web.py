@@ -65,7 +65,7 @@ from replay.artifact.locators import (
     RoleNameLocator,
     SelectorLocator,
 )
-from replay.artifact.schema import Action, TargetSpec
+from replay.artifact.schema import Action, Extraction, TargetSpec
 from replay.escalation.trace import BINDING, LISTENER_JS
 from replay.policy.allowlist import Allowlist, PolicyRefused
 from replay.surface.base import (
@@ -651,6 +651,8 @@ class WebSurface:
         expect_navigation: bool = False,
         on_dialog: DialogPolicy | None = None,
         timeout_ms: int = 10_000,
+        extraction: Extraction = Extraction.TEXT,
+        attribute: str | None = None,
     ) -> ActionOutcome:
         """Perform one action, answering at most this action's own dialogs.
 
@@ -671,6 +673,8 @@ class WebSurface:
                 value,
                 expect_navigation=expect_navigation,
                 timeout_ms=timeout_ms,
+                extraction=extraction,
+                attribute=attribute,
             )
         finally:
             # Only what this call armed. ACCEPT_DIALOG and answer_next_dialog()
@@ -731,6 +735,8 @@ class WebSurface:
         *,
         expect_navigation: bool = False,
         timeout_ms: int = 10_000,
+        extraction: Extraction = Extraction.TEXT,
+        attribute: str | None = None,
     ) -> ActionOutcome:
         # Enforced here rather than at the call site, so discovery, replay and
         # recovery rules are all covered without knowing the allowlist exists.
@@ -781,7 +787,7 @@ class WebSurface:
                     case Action.PRESS:
                         handle.press(str(value), timeout=timeout_ms)
                     case Action.READ:
-                        return handle.inner_text(timeout=timeout_ms).strip()
+                        return self._extract(handle, extraction, attribute, timeout_ms)
                     case _:
                         raise SurfaceError(f"unsupported action {action.value!r}")
                 return None
@@ -834,6 +840,40 @@ class WebSurface:
                 since=before,
                 error=f"{type(exc).__name__}: {exc}".strip(),
             )
+
+    @staticmethod
+    def _extract(
+        handle: PWLocator, extraction: Extraction, attribute: str | None, timeout_ms: int
+    ) -> str | None:
+        """Read the part of the control the artifact declared, not always its text.
+
+        ``inner_text`` was the whole of this, so an output declaring
+        ``extraction: value`` on a member form's ``<input>`` got that element's
+        text — which is ``""``, because an input holds no text — and the run
+        reported it as the value that was asked for. On this application that is
+        the difference between a member's balance and an empty string dressed up
+        as one.
+
+        Nothing is guessed from the element. The artifact says which part it
+        means, and a control that cannot answer that question raises rather than
+        substituting the part it can: ``input_value`` on a table cell is a
+        Playwright error and reaches the caller as a failed step, which is the
+        correct answer to a capability that has been recorded wrong.
+        """
+        match extraction:
+            case Extraction.VALUE:
+                return handle.input_value(timeout=timeout_ms).strip()
+            case Extraction.ATTRIBUTE:
+                if not attribute:
+                    # Guaranteed by the schema, and asserted here because this
+                    # method is reachable from any caller, not only an artifact.
+                    raise SurfaceError("attribute extraction requires an attribute name")
+                found = handle.get_attribute(attribute, timeout=timeout_ms)
+                # Absent is not empty. `None` leaves the declared output
+                # unfilled, which the engine reports rather than passing off.
+                return found.strip() if found is not None else None
+            case _:
+                return handle.inner_text(timeout=timeout_ms).strip()
 
     def _explain_stalled_navigation(self, since: int) -> str:
         """Say why nothing moved, in terms the caller can act on."""

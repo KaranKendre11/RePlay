@@ -580,6 +580,29 @@ class CapabilityArtifact(Model):
         return self
 
     @model_validator(mode="after")
+    def _outputs_from_one_step_extract_the_same_way(self) -> CapabilityArtifact:
+        """One read happens per step, so one step cannot be read two ways.
+
+        Two outputs may name the same read step — the same cell under two names
+        is harmless — but they may not disagree about what to take off it. The
+        step is performed once, with one extraction, and both outputs are filled
+        from that single read; a second output asking for the element's
+        ``value`` while the first asked for its text would silently be handed
+        the text. That is the defect this field exists to prevent, arriving one
+        level up.
+        """
+        by_step: dict[str, OutputSource] = {}
+        for out in self.outputs:
+            first = by_step.setdefault(out.source.step_id, out.source)
+            if (first.extraction, first.attribute) != (out.source.extraction, out.source.attribute):
+                raise ValueError(
+                    f"output {out.name!r} reads step {out.source.step_id!r} as "
+                    f"{out.source.extraction.value!r}, but another output already reads it as "
+                    f"{first.extraction.value!r}; one read step is read exactly one way"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _outcome_codes_are_unique(self) -> CapabilityArtifact:
         codes = [o.code for o in self.outcomes]
         duplicates = {c for c in codes if codes.count(c) > 1}
