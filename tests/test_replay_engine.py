@@ -127,6 +127,20 @@ def test_one_members_balance_is_never_returned_for_another(artifact, tmp_path):
     assert someone_else.outputs == {}, "no balance at all is the only safe answer"
 
 
+def test_a_second_member_still_replays_against_the_live_application(executor):
+    """The other half of the fix above, and the way it could have gone wrong.
+
+    The checkpoint now asserts the member id is on screen. If that id were not
+    actually rendered where the assertion looks, every lookup except the
+    recorded one would fail — trading a wrong answer for a broken capability.
+    Member 67890 has a different balance and a different branch, so a stale
+    screen could not produce this result.
+    """
+    result = executor.run({"member_id": "67890"})
+    assert result.status is ReplayStatus.SUCCESS
+    assert result.outputs == {"current_savings_balance": "312.50"}
+
+
 def test_a_declared_output_that_never_appeared_is_not_a_success(artifact, tmp_path):
     """`success` means "use `outputs`", so every declared key has to be in it.
 

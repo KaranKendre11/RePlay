@@ -295,6 +295,11 @@ def synthesize(
         raise SynthesisError("the run recorded no successful actions")
 
     checkpoint, checkpoint_text, notes = choose_checkpoint(result)
+    # The loop's warnings are about this capability's trustworthiness — chiefly
+    # that a human performed part of the flow, so nothing here is proven
+    # replayable. They reached the terminal of whoever ran `discover` and went
+    # no further; the artifact is the reviewable unit, so they belong in it.
+    notes.extend(result.warnings)
     inputs = _inputs(result)
     notes.extend(
         f"pattern {spec.pattern!r} on {spec.name!r} was inferred from the single recorded "

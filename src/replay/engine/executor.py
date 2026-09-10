@@ -224,7 +224,14 @@ def bind_parameters(artifact: CapabilityArtifact, supplied: dict[str, Any]) -> d
             if spec.required:
                 raise InvalidArguments(f"missing required argument {name!r}")
             continue
-        value = str(supplied[name])
+        # The declared type is published to callers in the capability's JSON
+        # Schema, so it has to be enforced somewhere the CLI reaches too — the
+        # API validating it alone left every other caller with a contract that
+        # was advertised and never applied.
+        try:
+            value = spec.check(supplied[name])
+        except ValueError as wrong:
+            raise InvalidArguments(str(wrong)) from None
         if spec.pattern and not re.fullmatch(spec.pattern, value):
             raise InvalidArguments(
                 f"argument {name!r} does not match the declared pattern {spec.pattern!r}"
@@ -539,9 +546,17 @@ class ReplayExecutor:
         """
         outcome = self._detect_outcome(step)
         if outcome is not None:
-            result.status = ReplayStatus.BUSINESS_OUTCOME
-            result.outcome = outcome
             self.recorder.event("business_outcome", **outcome.to_dict())
+            # `terminal` was declared, validated and never read, so an outcome
+            # meaning "note this and carry on" stopped the run exactly like one
+            # that ends it. Only a terminal outcome is the run's answer; a
+            # non-terminal one is recorded and the flow continues, so a later
+            # step decides the status.
+            declared = next((o for o in self.artifact.outcomes if o.code == outcome.code), None)
+            result.outcome = outcome
+            if declared is not None and not declared.terminal:
+                return True
+            result.status = ReplayStatus.BUSINESS_OUTCOME
             return False
 
         if step.checkpoint is not None and not self._verify(step.checkpoint, step, report):
@@ -641,13 +656,19 @@ class ReplayExecutor:
         expect_navigation = any(w.kind is WaitKind.NAVIGATION for w in step.waits)
         dialog = DialogPolicy.ACCEPT if step.risk is RiskClass.IRREVERSIBLE else None
 
+        # A declared wait is a budget, not a flag. Reading only `kind` meant the
+        # artifacts' own `timeout_ms: 15000` was accepted, validated, serialised
+        # and then silently replaced by this executor's default.
+        declared = [w.timeout_ms for w in step.waits if w.timeout_ms]
+        timeout_ms = max(declared) if declared else self.step_timeout_ms
+
         outcome = self.surface.act(
             step.action,
             step.target,
             value,
             expect_navigation=expect_navigation,
             on_dialog=dialog,
-            timeout_ms=self.step_timeout_ms,
+            timeout_ms=timeout_ms,
         )
 
         if outcome.resolution is not None:
@@ -974,7 +995,13 @@ class ReplayExecutor:
         the diagnosis, it would remove it.
         """
         observation = self.surface.observe(screenshot=False)
-        return "\n".join(self.surface.text_of(frame.path) for frame in observation.frames)
+        parts = []
+        for frame in observation.frames:
+            try:
+                parts.append(self.surface.text_of(frame.path))
+            except SurfaceError as blind:
+                parts.append(f"(could not read {frame.path or ['(main)']}: {blind})")
+        return "\n".join(parts)
 
     def _capture(self, step_id: str) -> dict[str, str]:
         """The richer signal the brief asks for on failure.
