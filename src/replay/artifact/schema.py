@@ -32,7 +32,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from replay.artifact.conditions import Condition
+from replay.artifact.conditions import Condition, parameters_in
 from replay.artifact.locators import Locator
 
 SCHEMA_VERSION = "1.0"
@@ -555,11 +555,44 @@ class CapabilityArtifact(Model):
 
     @model_validator(mode="after")
     def _param_refs_resolve(self) -> CapabilityArtifact:
+        """Every parameter this artifact names is one the caller can actually supply.
+
+        Step values were checked and conditions were not, which stopped being a
+        harmless gap the moment a condition could name a parameter. The
+        checkpoint on ``lookup_balance@1.1.0`` asserts the member id, and it is
+        what stops one member's balance being returned in answer to a question
+        about another; a typo in the name it asserts is the difference between
+        that proof and no proof at all. ``bind_parameters`` does refuse the
+        invocation, but the artifact is the reviewable unit and a reviewer
+        reading a validated document should not have to run it to find a
+        reference that cannot resolve.
+
+        Conditions are walked by :func:`~replay.artifact.conditions.parameters_in`
+        rather than by a second walker here: a condition kind added there is
+        then covered here for free, and two traversals that drifted apart would
+        disagree about what an artifact means.
+        """
         declared = {p.name for p in self.inputs}
         for step in self.steps:
-            if isinstance(step.value, ParamRef) and step.value.param not in declared:
+            named = {step.value.param} if isinstance(step.value, ParamRef) else set()
+            conditions = (
+                step.checkpoint,
+                *(w.condition for w in step.waits),
+                *(r.when for r in step.on_error),
+            )
+            for condition in conditions:
+                if condition is not None:
+                    named |= parameters_in(condition)
+            undeclared = sorted(named - declared)
+            if undeclared:
                 raise ValueError(
-                    f"step {step.id!r} references undeclared parameter {step.value.param!r}"
+                    f"step {step.id!r} references undeclared parameter(s) {undeclared}"
+                )
+        for outcome in self.outcomes:
+            undeclared = sorted(parameters_in(outcome.detect) - declared)
+            if undeclared:
+                raise ValueError(
+                    f"outcome {outcome.code!r} references undeclared parameter(s) {undeclared}"
                 )
         return self
 
