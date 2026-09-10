@@ -51,8 +51,9 @@ space, so synthesis does not invent one; outcomes are attached at review and the
 earned nothing.
 
 Most validators exist to *reject*, each matching a failure we would otherwise meet in production:
-no checkpoint anywhere, an output sourced from a click, a sensitive parameter carrying a persisted
-example, a policy permitting less risk than the steps take.
+no checkpoint anywhere, no checkpoint on a step above `safe` risk, an output sourced from a click,
+a sensitive parameter carrying a persisted example, a policy permitting less risk than the steps
+take.
 
 Synthesis reads only the run result, never the transcript — possible because the loop recorded
 durable targets rather than model prose. A test compares the synthesised artifact against a

@@ -622,15 +622,37 @@ class CapabilityArtifact(Model):
 
     @model_validator(mode="after")
     def _success_is_verifiable(self) -> CapabilityArtifact:
-        """At least one checkpoint must exist.
+        """A checkpoint must exist, and one must sit on every step that can do harm.
 
-        Without one, replay can only report "the clicks did not raise", which is
-        not the same as "the capability worked". The brief asks for a checkpoint
-        or success condition; this makes it structurally impossible to omit.
+        Without any checkpoint, replay can only report "the clicks did not
+        raise", which is not the same as "the capability worked". The brief asks
+        for a checkpoint or success condition; this makes it structurally
+        impossible to omit.
+
+        One checkpoint *somewhere* is not the same guarantee for the step that
+        does the damage. A step the risk gate refuses is escalated, and an
+        operator performs it on the live session; the automation does not repeat
+        it, so ``_operator_performed`` reports ``ok`` on the strength of control
+        coming back and nothing else. With nothing declared on that step there is
+        no proof but the operator's word — and "I have handled it" is a claim
+        about the operator rather than about the application. The engine does
+        refuse that, but only once the operator has already performed an
+        irreversible action against a bank; refusing the artifact is the one
+        moment the refusal is free. ``open_subaccount`` passes because s7
+        happens to carry the checkpoint, which until now was luck.
         """
         if not any(s.checkpoint is not None for s in self.steps):
             raise ValueError(
                 "at least one step must declare a checkpoint, otherwise success cannot be verified"
+            )
+        unproven = [
+            s.id for s in self.steps if s.risk is not RiskClass.SAFE and s.checkpoint is None
+        ]
+        if unproven:
+            raise ValueError(
+                f"step(s) {unproven} are above {RiskClass.SAFE.value!r} risk and declare no "
+                "checkpoint; a step that can do damage has to carry its own proof that it "
+                "worked, because it is the one a person may end up performing for us"
             )
         return self
 
