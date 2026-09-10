@@ -22,7 +22,7 @@ from replay.artifact import (
     json_schema,
     serialize,
 )
-from replay.artifact.conditions import TextPresent
+from replay.artifact.conditions import ParamText, TextPresent
 from replay.artifact.locators import (
     AnchoredTextLocator,
     LabelAdjacentLocator,
@@ -189,6 +189,42 @@ def test_duplicate_step_ids_are_rejected():
 def test_undeclared_parameter_reference_is_rejected():
     with pytest.raises(ValidationError, match="undeclared parameter"):
         artifact(inputs=[ParamSpec(name="other", description="Something else.")])
+
+
+def test_a_condition_may_not_name_a_parameter_that_does_not_exist():
+    """Since ``ParamText``, a checkpoint or a detector can name a parameter too.
+
+    That is now the load-bearing assertion in the system —
+    ``lookup_balance@1.1.0`` proves whose screen it read by naming the member
+    id — and the validator only looked at step values, so a checkpoint naming an
+    argument that does not exist loaded cleanly and failed at replay.
+    """
+    checkpointed = artifact().steps
+    checkpointed[1] = checkpointed[1].model_copy(
+        update={"checkpoint": TextPresent(text=ParamText(param="account_id"))}
+    )
+    with pytest.raises(ValidationError, match="undeclared parameter"):
+        artifact(steps=checkpointed)
+
+    with pytest.raises(ValidationError, match="undeclared parameter"):
+        artifact(
+            outcomes=[
+                BusinessOutcome(
+                    code="MEMBER_NOT_FOUND",
+                    detect=TextPresent(text=ParamText(param="account_id")),
+                    message="Not found.",
+                )
+            ]
+        )
+
+
+def test_a_condition_naming_a_declared_parameter_still_loads():
+    """The rule is that the reference resolves, not that conditions may not have one."""
+    steps = artifact().steps
+    steps[1] = steps[1].model_copy(
+        update={"checkpoint": TextPresent(text=ParamText(param="member_id"))}
+    )
+    assert artifact(steps=steps).steps[1].checkpoint.text.param == "member_id"
 
 
 def test_outputs_must_come_from_a_read_step():
