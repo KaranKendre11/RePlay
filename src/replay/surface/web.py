@@ -66,6 +66,7 @@ from replay.artifact.locators import (
     SelectorLocator,
 )
 from replay.artifact.schema import Action, TargetSpec
+from replay.engine.result import FailureClass
 from replay.escalation.trace import BINDING, LISTENER_JS
 from replay.policy.allowlist import Allowlist, PolicyRefused
 from replay.surface.base import (
@@ -716,6 +717,7 @@ class WebSurface:
                     read_value=None,
                     navigated=False,
                     error=str(refusal),
+                    failure_class=FailureClass.POLICY_REFUSED,
                     note=(
                         "the page had already loaded when this was caught; the session has "
                         "been left blank so nothing off-limits is observed or recorded"
@@ -742,7 +744,13 @@ class WebSurface:
                 if action is Action.NAVIGATE and value:
                     self.allowlist.check_navigation(str(value))
             except PolicyRefused as refusal:
-                return self._done(action, False, since=len(self._dialogs), error=str(refusal))
+                return self._done(
+                    action,
+                    False,
+                    since=len(self._dialogs),
+                    error=str(refusal),
+                    failure_class=FailureClass.POLICY_REFUSED,
+                )
 
         before = len(self._dialogs)
         resolution: Resolution | None = None
@@ -827,12 +835,22 @@ class WebSurface:
             )
 
         except (PlaywrightError, PlaywrightTimeout, SurfaceError) as exc:
+            # The class is taken from the exception's type rather than left for
+            # the engine to read back out of the message. Which exception this
+            # is, is the one thing we know for certain here and the one thing a
+            # string cannot carry reliably: part of that message is the
+            # artifact's own target description.
             return self._done(
                 action,
                 False,
                 resolution=resolution,
                 since=before,
                 error=f"{type(exc).__name__}: {exc}".strip(),
+                failure_class=(
+                    FailureClass.TARGET_NOT_FOUND
+                    if isinstance(exc, TargetNotFound)
+                    else FailureClass.ACTION_FAILED
+                ),
             )
 
     def _explain_stalled_navigation(self, since: int) -> str:
@@ -855,6 +873,7 @@ class WebSurface:
         navigated: bool = False,
         since: int = 0,
         error: str | None = None,
+        failure_class: FailureClass | None = None,
         note: str | None = None,
     ) -> ActionOutcome:
         return ActionOutcome(
@@ -865,6 +884,7 @@ class WebSurface:
             navigated=navigated,
             dialogs=self._dialogs[since:],
             error=error,
+            failure_class=failure_class,
             note=note,
         )
 

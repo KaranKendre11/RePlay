@@ -16,7 +16,10 @@ every layer above and quietly make the desktop story impossible.
 **Resolution reports which tier won.** A surface does not merely find an
 element; it says how it had to find it. A capability that used to resolve by
 accessible name and now resolves by raw XPath still works, but it has drifted,
-and drift you cannot see is drift you cannot manage.
+and drift you cannot see is drift you cannot manage. A failed action says which
+*kind* of failure it was for the same reason: the surface knows by type, and an
+engine left to infer it from the error text is reading a format only one surface
+happens to write.
 
 **Optional capabilities are declared, not discovered.** Not every surface can
 do everything: a terminal has no markup to dump, a surface that cannot
@@ -38,13 +41,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from replay.artifact.conditions import Condition
 from replay.artifact.locators import Tier
 from replay.artifact.schema import Action, TargetSpec
 from replay.policy.allowlist import Allowlist
 from replay.surface.inventory import Candidate
+
+if TYPE_CHECKING:  # pragma: no cover
+    # Annotation only: the engine imports this module, so importing it back at
+    # run time would make the dependency circular. The same accommodation
+    # ``escalation.detect`` makes, and for the same reason — the taxonomy is a
+    # vocabulary the two sides share, not something the engine owns alone.
+    from replay.engine.result import FailureClass
 
 
 class SurfaceError(RuntimeError):
@@ -218,6 +228,24 @@ class ActionOutcome:
     navigated: bool = False
     dialogs: list[str] = field(default_factory=list)
     error: str | None = None
+    failure_class: FailureClass | None = None
+    """What kind of failure this was, said by the side that knows it by type.
+
+    ``error`` is prose for a person. This is the diagnosis, and it is here
+    because the surface already holds it structurally — a refusal is a
+    ``PolicyRefused``, a vanished control is a ``TargetNotFound`` — and
+    flattening both to a string made the engine reconstruct by parsing what had
+    just been thrown away. That parse reads a format only this repository's
+    surface happens to write, so the second surface the protocol exists to make
+    possible lost ``TARGET_NOT_FOUND``, and with it the drift diagnosis, purely
+    by phrasing its errors differently.
+
+    ``None`` is allowed and means "no opinion", not "nothing went wrong": a
+    surface may set ``ok=False`` and leave this alone, and the engine falls back
+    to reading ``error`` as it always did. Optional rather than required because
+    the whole argument for this protocol is that writing one more surface is a
+    small thing to do, and a required field is one more thing to get right
+    before anything runs at all."""
     note: str | None = None
     """Something that happened which is not an error but changes what to do next.
 
@@ -235,6 +263,7 @@ class ActionOutcome:
             "navigated": self.navigated,
             "dialogs": list(self.dialogs),
             "error": self.error,
+            "failure_class": self.failure_class.value if self.failure_class else None,
             "note": self.note,
         }
 
