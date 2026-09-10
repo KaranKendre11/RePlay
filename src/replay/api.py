@@ -29,7 +29,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from replay.artifact import (
     ArtifactInvalid,
@@ -52,6 +52,11 @@ from replay.surface import WebSurface
 class InvokeRequest(BaseModel):
     """One call. Arguments are checked against the capability's own schema."""
 
+    # An unknown field is refused rather than dropped. Silently ignoring one
+    # means a caller that sends `allow_irreversible` believes it raised the
+    # ceiling and is told nothing — which is worse than the field existing.
+    model_config = ConfigDict(extra="forbid")
+
     arguments: dict[str, Any] = Field(default_factory=dict)
     target: str | None = Field(
         default=None,
@@ -61,8 +66,11 @@ class InvokeRequest(BaseModel):
         default=None,
         description="Apply this tenant's overrides. The capability's contract is unchanged.",
     )
-    allow_risky: bool = False
-    allow_irreversible: bool = False
+    # No allow_risky / allow_irreversible. They were plain booleans in an
+    # unauthenticated request body, which is the arrangement policy/risk.py
+    # argues against by name: a flag the caller can set moves the decision to
+    # whoever wrote the calling code. The ceiling is a deployment's, and lives
+    # in policy.toml beside the allowlist.
     escalate: bool = Field(
         default=False,
         description=(
@@ -139,11 +147,16 @@ def create_api(
     queue: InterventionQueue | None = None,
     headed: bool = False,
     allowlist: Allowlist | None = None,
+    gate: RiskGate | None = None,
 ) -> FastAPI:
     store = ArtifactStore(artifacts_dir)
     # Loaded from the shipped policy unless a caller supplies one. Tests bind to
     # an ephemeral port, which the production policy rightly does not allow.
     allowlist = allowlist if allowlist is not None else Allowlist.from_file(policy_file)
+    # One ceiling for the life of the server, from the same file as the
+    # allowlist. Raising it is a config change someone reviews, not a field a
+    # caller sets per request.
+    gate = gate if gate is not None else RiskGate.from_file(policy_file)
     queue = queue if queue is not None else InterventionQueue()
 
     app = FastAPI(
@@ -205,10 +218,6 @@ def create_api(
             return JSONResponse({"error": str(mistyped)}, status_code=422)
 
         run_id = new_run_id("invoke")
-        gate = RiskGate(
-            allow_risky=request.allow_risky,
-            allow_irreversible=request.allow_irreversible,
-        )
         # Without opt-in there is no operator, so a blocked capability is
         # refused immediately rather than held open waiting for one.
         handler = (
