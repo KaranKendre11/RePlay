@@ -43,6 +43,7 @@ from replay.artifact.conditions import Condition, ParamText, parameters_in, subs
 from replay.artifact.schema import (
     Action,
     CapabilityArtifact,
+    OutputSource,
     ParamRef,
     RecoveryAction,
     RiskClass,
@@ -733,6 +734,16 @@ class ReplayExecutor:
         declared = [w.timeout_ms for w in step.waits if w.timeout_ms]
         timeout_ms = max(declared) if declared else self.step_timeout_ms
 
+        # Which part of the control to read is declared on the *output*, not on
+        # the step, so the two have to be joined here — the surface is handed a
+        # target and would otherwise have nothing to go on but the element.
+        # A step no output sources from reads as text, which is the default the
+        # schema gives an output too.
+        source = next(
+            (o.source for o in self.artifact.outputs if o.source.step_id == step.id),
+            OutputSource(step_id=step.id),
+        )
+
         outcome = self.surface.act(
             step.action,
             step.target,
@@ -740,6 +751,8 @@ class ReplayExecutor:
             expect_navigation=expect_navigation,
             on_dialog=dialog,
             timeout_ms=timeout_ms,
+            extraction=source.extraction,
+            attribute=source.attribute,
         )
 
         if outcome.resolution is not None:

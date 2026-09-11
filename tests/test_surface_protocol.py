@@ -32,7 +32,7 @@ from replay.agent import DiscoveryLoop, MockLLM
 from replay.artifact import ArtifactStore
 from replay.artifact.conditions import AllOf, AnyOf, Condition, Not, TextAbsent, TextPresent
 from replay.artifact.locators import Tier
-from replay.artifact.schema import Action, TargetSpec
+from replay.artifact.schema import Action, Extraction, TargetSpec
 from replay.engine import FailureClass, ReplayExecutor, ReplayStatus
 from replay.engine.executor import classify_error
 from replay.evidence import EvidenceRecorder
@@ -114,7 +114,19 @@ class MinimalSurface:
         expect_navigation: bool = False,
         on_dialog: DialogPolicy | None = None,
         timeout_ms: int = 10_000,
+        extraction: Extraction = Extraction.TEXT,
+        attribute: str | None = None,
     ) -> ActionOutcome:
+        if action is Action.READ and extraction is not Extraction.TEXT:
+            # A screen that is only text has no control to take a value or an
+            # attribute off. Saying so is the protocol's requirement: handing
+            # back the text instead would answer a question nobody asked, and
+            # the caller would have no way to tell.
+            return ActionOutcome(
+                action=action,
+                ok=False,
+                error=f"SurfaceError: this surface cannot extract {extraction.value}",
+            )
         return ActionOutcome(
             action=action,
             ok=True,
@@ -198,6 +210,8 @@ class FailingSurface(MinimalSurface):
         expect_navigation: bool = False,
         on_dialog: DialogPolicy | None = None,
         timeout_ms: int = 10_000,
+        extraction: Extraction = Extraction.TEXT,
+        attribute: str | None = None,
     ) -> ActionOutcome:
         """Navigation still works; anything addressing a control does not.
 
@@ -257,6 +271,24 @@ def test_the_minimal_surface_is_exactly_what_the_protocol_declares():
 
     assert public == set(Surface.__protocol_attrs__)
     assert isinstance(MinimalSurface(), Surface)
+
+
+def test_a_surface_that_cannot_extract_that_way_refuses_rather_than_returning_text():
+    """The contract's half of the extraction fix, from the other side.
+
+    A screen made of text has no control to take a value or an attribute off.
+    The protocol says such a surface must say so, because the alternative — the
+    text, handed back as though it were the value — is a plausible wrong answer
+    the caller has no way to detect. Asserted on this implementation because
+    this is the one written from the protocol and nothing else.
+    """
+    surface = MinimalSurface(MEMBER_SCREEN, read="4,211.03")
+
+    assert surface.act(Action.READ).read_value == "4,211.03"
+    refused = surface.act(Action.READ, extraction=Extraction.VALUE)
+    assert not refused.ok
+    assert refused.read_value is None
+    assert "value" in refused.error
 
 
 def test_the_optional_capabilities_are_opted_into_rather_than_assumed():

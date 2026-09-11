@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from replay.artifact.conditions import Condition
 from replay.artifact.locators import Tier
-from replay.artifact.schema import Action, TargetSpec
+from replay.artifact.schema import Action, Extraction, TargetSpec
 from replay.policy.allowlist import Allowlist
 from replay.surface.inventory import Candidate
 
@@ -334,8 +334,23 @@ class Surface(Protocol):
         expect_navigation: bool = False,
         on_dialog: DialogPolicy | None = None,
         timeout_ms: int = 10_000,
+        extraction: Extraction = Extraction.TEXT,
+        attribute: str | None = None,
     ) -> ActionOutcome:
-        """Perform one action."""
+        """Perform one action.
+
+        ``extraction`` applies to :attr:`Action.READ` and says which part of the
+        control to read: what a person sees on it, the value it currently holds,
+        or the named ``attribute``. Not a nicety on a legacy form — an
+        ``<input>`` has no text of its own, so reading one as text returns
+        whatever label happens to sit inside it, or nothing at all, and that
+        answer is handed back as the number the caller asked for.
+
+        A surface that cannot extract the way it was asked *says so*, with a
+        failed :class:`ActionOutcome` or a :class:`SurfaceError`. Quietly
+        falling back to text is the one response this protocol will not accept:
+        it produces a plausible wrong value, which is worse than no value.
+        """
 
     def evaluate(self, condition: Condition) -> bool:
         """Is this condition true right now?"""

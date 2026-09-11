@@ -17,7 +17,14 @@ from test_surface_protocol import MarkupSurface, MinimalSurface
 
 from replay.artifact import ArtifactStore
 from replay.artifact.conditions import TextPresent
-from replay.artifact.schema import ParamRef, ParamSpec
+from replay.artifact.schema import (
+    Action,
+    Extraction,
+    OutputSource,
+    OutputSpec,
+    ParamRef,
+    ParamSpec,
+)
 from replay.engine import (
     FailureClass,
     InvalidArguments,
@@ -159,6 +166,69 @@ def test_a_declared_output_that_never_appeared_is_not_a_success(artifact, tmp_pa
     assert result.status is ReplayStatus.FAILED
     assert "current_savings_balance" in result.failure.expected
     assert result.failure.step_id == "s4"
+
+
+def test_a_declared_extraction_reads_the_control_and_not_its_text(
+    meridian_server, artifact, tmp_path
+):
+    """`OutputSource.extraction` was declared, validated, published and ignored.
+
+    The READ branch always called `inner_text`, so an output declaring
+    `extraction: value` was handed the element's *text* instead. On a real
+    `<input>` that is `""` — an input holds no text — and the run reported it
+    as the value the caller asked for: `success`, the declared key present, and
+    the wrong thing in it. A worse version of the same bug is an input with a
+    label inside it, where the answer is plausible rather than empty.
+
+    Driven against MERIDIAN's member search form because that is where the
+    distinction is real: its fields are actual inputs, carrying actual
+    attributes, with no test id anywhere near them.
+    """
+    typed = artifact.steps[1]  # s2 — types the member id into the Member ID field.
+    reads_value = typed.model_copy(
+        update={
+            "id": "s2value",
+            "intent": "Read back what the Member ID field now holds.",
+            "action": Action.READ,
+            "value": None,
+            "checkpoint": TextPresent(text="MEMBER INQUIRY", frame_path=["workframe"]),
+        }
+    )
+    reads_attribute = reads_value.model_copy(
+        update={"id": "s2limit", "intent": "Read how much the Member ID field will accept."}
+    )
+    variant = artifact.model_copy(
+        update={
+            "steps": [artifact.steps[0], typed, reads_value, reads_attribute],
+            "outputs": [
+                OutputSpec(
+                    name="member_id_on_the_form",
+                    description="What the Member ID field holds once the flow has filled it.",
+                    source=OutputSource(step_id="s2value", extraction=Extraction.VALUE),
+                ),
+                OutputSpec(
+                    name="member_id_max_length",
+                    description="How long a member id this screen accepts, from the field itself.",
+                    source=OutputSource(
+                        step_id="s2limit",
+                        extraction=Extraction.ATTRIBUTE,
+                        attribute="maxlength",
+                    ),
+                ),
+            ],
+        }
+    )
+
+    with (
+        WebSurface() as surface,
+        EvidenceRecorder("extraction", root=tmp_path) as recorder,
+    ):
+        result = ReplayExecutor(surface, variant, recorder=recorder, base_url=meridian_server).run(
+            {"member_id": "12345"}
+        )
+
+    assert result.status is ReplayStatus.SUCCESS, result.failure
+    assert result.outputs == {"member_id_on_the_form": "12345", "member_id_max_length": "10"}
 
 
 def test_a_reused_executor_never_carries_a_previous_runs_output(artifact, tmp_path):
