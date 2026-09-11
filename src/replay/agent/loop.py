@@ -217,6 +217,11 @@ class DiscoveryResult:
         }
 
 
+def _holds(text: str, values: set[str]) -> bool:
+    """Does this screen text carry any of these run values?"""
+    return any(value in text for value in values)
+
+
 class DiscoveryLoop:
     def __init__(
         self,
@@ -707,7 +712,7 @@ class DiscoveryLoop:
             return
 
         result.warnings.extend(self._checkpoint_warnings(checkpoint, result))
-        result.checkpoint_candidates = self._stable_texts(result)
+        result.checkpoint_candidates = self._checkpoint_candidates(result)
         result.status = StopReason.GOAL_MET
 
     @staticmethod
@@ -735,25 +740,49 @@ class DiscoveryLoop:
                 )
         return notes
 
-    def _stable_texts(self, result: DiscoveryResult) -> list[str]:
-        """Text on the success screen that does not vary with the inputs.
+    def _checkpoint_candidates(self, result: DiscoveryResult) -> list[str]:
+        """Text on the success screen a checkpoint could be built from.
 
-        Row labels, column headers and control names describe the *state* the
-        flow reached; the values beside them describe one member. Synthesis
-        needs the former when the model hands back the latter.
+        Two kinds, and synthesis needs both. Row labels, column headers and
+        control names describe the *state* the flow reached, so they can be
+        asserted literally — that is what replaces a checkpoint built out of
+        this run's data. A cell holding a **parameter's** value describes
+        *whose* screen this is, and it is the assertion that stops one member's
+        balance answering a question about another. It varies per invocation,
+        so it is usable only by reference (``ParamText``), which is exactly what
+        ``choose_checkpoint`` builds from it.
+
+        Parameter values were filtered out here, from back when a checkpoint
+        could only be a literal string and one naming the member id would have
+        been true for a single invocation. The consequence outlived the reason:
+        the strongest available checkpoint could be built only from text the
+        model happened to propose, because nothing else carrying a parameter
+        ever reached synthesis.
+
+        An **output** is refused in both roles and that distinction is the point
+        of the function: it is unknown until the run produces it, so no
+        assertion naming it holds a second time.
+
+        Chrome comes first, in screen order, so the literal a substitution falls
+        back to is the same one it always was.
         """
-        volatile = {v for v in result.parameters.values() if v}
-        volatile |= {v for v in result.outputs.values() if v}
+        parameters = {v for v in result.parameters.values() if v}
+        outputs = {v for v in result.outputs.values() if v}
+        varies = parameters | outputs
 
-        texts: list[str] = []
+        chrome: list[str] = []
+        identifying: list[str] = []
         for candidate in self.surface.inventory():
             for text in (candidate.label, candidate.name):
-                if not text or text in volatile or text in texts:
-                    continue
-                if any(value and value in text for value in volatile):
-                    continue
-                texts.append(text)
-        return texts
+                if text and not _holds(text, varies):
+                    chrome.append(text)
+            # Only where a parameter is, and never merely because it is a value:
+            # the member's name and the branch code vary per member too, and
+            # neither is knowable at replay time.
+            for text in (candidate.value, candidate.text):
+                if text and _holds(text, parameters) and not _holds(text, outputs):
+                    identifying.append(text)
+        return list(dict.fromkeys([*chrome, *identifying]))
 
     def _visible_text(self) -> str:
         observation = self.surface.observe(screenshot=False)
