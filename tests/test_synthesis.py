@@ -378,6 +378,43 @@ def test_a_run_with_no_successful_actions_is_refused():
         synthesize(run(actions=failed), name="x")
 
 
+def test_a_committing_step_that_is_not_where_the_flow_arrives_is_refused():
+    """The single checkpoint hangs off the last step that changed screen.
+
+    A commit part-way through the flow — a two-stage submit, or a confirmation
+    followed by a return to the summary — is not that step, so it came out with
+    no checkpoint at all: a capability whose damaging step is the one nobody can
+    check, and which the schema now rejects with a `ValidationError` naming a
+    pydantic model rather than the run that produced it.
+
+    Refused here instead, and refused rather than papered over: proof the flow
+    arrived is not proof the commit took, and discovery records no screen text
+    between one action and the next to build the second claim out of.
+    """
+    actions = [
+        RecordedAction(step_id="s1", intent="Open.", action=Action.NAVIGATE, value="http://x/"),
+        RecordedAction(
+            step_id="s2",
+            intent="Submit the transfer.",
+            action=Action.CLICK,
+            target=target("Submit", RoleNameLocator(role="button", name="Submit")),
+            expect_navigation=True,
+            navigated=True,
+        ),
+        RecordedAction(
+            step_id="s3",
+            intent="Go back to the summary.",
+            action=Action.CLICK,
+            target=target("Summary", RoleNameLocator(role="link", name="Summary")),
+            expect_navigation=True,
+            navigated=True,
+        ),
+    ]
+    with pytest.raises(SynthesisError, match="commit something") as refused:
+        synthesize(run(actions=actions), name="transfer")
+    assert "'s2'" in str(refused.value), "names the step, not just the rule"
+
+
 def test_two_fields_that_slug_to_one_name_are_refused():
     """`slug` is lossy and nothing downstream notices.
 

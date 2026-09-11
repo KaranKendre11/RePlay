@@ -313,6 +313,7 @@ def synthesize(
     steps, outputs = _steps_and_outputs(successful, result, checkpoint, recoveries or [])
     _refuse_collisions("input", [spec.name for spec in inputs])
     _refuse_collisions("output", [spec.name for spec in outputs])
+    _refuse_unproven_risk(steps)
 
     max_risk = max(
         (s.risk for s in steps),
@@ -409,6 +410,43 @@ def _refuse_collisions(kind: str, names: list[str]) -> None:
         raise SynthesisError(
             f"two or more {kind}s reduce to the same name {duplicates}; they must be "
             "distinguishable in the artifact's contract before it can be synthesised"
+        )
+
+
+def _refuse_unproven_risk(steps: list[Step]) -> None:
+    """A step that can do damage must carry its own proof that it worked.
+
+    The schema requires this, and refuses the artifact if it is missing. The
+    refusal is right — a step the risk gate blocks is escalated, an operator
+    performs it on the live session, and with nothing declared on that step the
+    only evidence it took is the operator's word. But a ``ValidationError`` at
+    the end of a discovery run names a pydantic model, not the run, and the
+    person reading it has just spent tokens getting there.
+
+    So the same rule is stated here, in terms of what was recorded. The single
+    checkpoint hangs off the last step that changed screen, which is where the
+    flow *arrives*; a commit part-way through — a two-stage submit, a
+    confirmation followed by a return to the summary — is not that step, and
+    proof the flow arrived is not proof that the commit took. They are different
+    claims about different moments.
+
+    Refused rather than papered over. Attaching the arrival checkpoint here as
+    well would assert final-screen text at a point in the flow that has not
+    reached the final screen: false on every replay if the wording is specific,
+    and worse than nothing if it happens to be true anyway. Discovery records no
+    screen text between one action and the next, so there is nothing honest in
+    the run to assert, and inventing one is exactly what this module refuses to
+    do with checkpoints everywhere else.
+    """
+    unproven = [s.id for s in steps if s.risk is not RiskClass.SAFE and s.checkpoint is None]
+    if unproven:
+        raise SynthesisError(
+            f"step(s) {unproven} commit something and nothing in the run proves they took: "
+            "the checkpoint proves the flow reached its final screen, which is a different "
+            "claim about a different moment, and discovery records no screen text between "
+            "one action and the next. Declare what should be true immediately after these "
+            "steps and attach it during review, rather than shipping a capability whose "
+            "damaging step is the one nobody can check"
         )
 
 
