@@ -7,9 +7,10 @@ suite enforces it by failing if an LLM client is ever instantiated during a
 replay.
 
 The loop is deliberately boring. For each recorded step: resolve the target
-through its ladder, act, then look at what came back. The only interesting
-decisions are what to do with what came back, and there are exactly three
-answers — a declared business outcome, a recoverable condition, or a failure.
+through its ladder, act, wait for the readiness the step declared, then look at
+what came back. The only interesting decisions are what to do with what came
+back, and there are exactly three answers — a declared business outcome, a
+recoverable condition, or a failure.
 
 Two details worth calling out.
 
@@ -260,6 +261,13 @@ def _conditions(artifact: CapabilityArtifact) -> Iterator[Condition]:
     for step in artifact.steps:
         if step.checkpoint is not None:
             yield step.checkpoint
+        for wait in step.waits:
+            # A wait is evaluated exactly like a checkpoint, so it can name a
+            # parameter exactly like one, and the promise above — that an
+            # unsuppliable condition is reported here rather than as a mid-flow
+            # crash — has to cover it too.
+            if wait.condition is not None:
+                yield wait.condition
         for rule in step.on_error:
             yield rule.when
     for outcome in artifact.outcomes:
@@ -596,23 +604,72 @@ class ReplayExecutor:
         this flow to be wrong about, and the reason the check has to be worth
         trusting before it is worth having.
 
-        So: poll until the screen shows something the artifact recognises —
-        the checkpoint, or a declared outcome — or the step's own budget runs
-        out. Bounded, because a screen that never arrives is a real failure and
-        still has to be reported as one; polled rather than slept, because a
-        fixed pause is simultaneously too long for the common case and too
-        short for the slow one.
+        So: poll for the checkpoint on the step's own budget, then let the
+        checkpoint decide. Unlike a declared wait, a screen that never arrives
+        is not reported from here — the failure that follows is the
+        checkpoint's, and what it says is that the operator's work is not
+        visible, which is the truth of it.
         """
         if step.checkpoint is None:
             # Unreachable from the handoff path, which refuses a step it cannot
             # verify before it gets here, and a no-op for any other caller.
             return
 
-        deadline = time.monotonic() + self.step_timeout_ms / 1000
-        while time.monotonic() < deadline:
-            if self._holds(step.checkpoint) or self._detect_outcome(step) is not None:
-                return
+        self._wait_until(step.checkpoint, step, self.step_timeout_ms)
+
+    def _wait_until(self, condition: Condition, step: Step, timeout_ms: int) -> bool:
+        """Poll until the screen shows something the artifact recognises.
+
+        The condition, *or* a declared outcome. A business answer lands on
+        exactly the screen the condition will never come true on — "no such
+        member" is not a slow "Current Balance" — so polling for the condition
+        alone would burn the whole budget and then report a timeout where the
+        capability has an answer the caller asked for.
+
+        Bounded, because a screen that never arrives is a real failure and still
+        has to be reported as one; polled rather than slept, because a fixed
+        pause is simultaneously too long for the common case and too short for
+        the slow one.
+        """
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            if self._holds(condition) or self._detect_outcome(step) is not None:
+                return True
+            if time.monotonic() >= deadline:
+                return False
             time.sleep(0.1)
+
+    def _honour_waits(self, step: Step) -> str | None:
+        """Hold the step open until the readiness it declared is real.
+
+        Returns the reason it never was, or ``None`` if it is.
+
+        ``NAVIGATION`` is not handled here: it is the one kind that has to wrap
+        the action rather than follow it, so it is passed into ``act``. The
+        other two are this method's, and they were declared, validated,
+        serialised and ignored — an artifact could say "this screen is not ready
+        until the workframe shows MEMBER INQUIRY", have a reviewer agree, and
+        replay would act on whatever happened to be there.
+
+        A declared wait that never comes true fails the step rather than being
+        shrugged at. Carrying on would put the next step against a screen that
+        is not ready, and it would report a control it could not resolve —
+        which reads as locator drift and sends whoever is debugging it to
+        entirely the wrong place.
+        """
+        for wait in step.waits:
+            match wait.kind:
+                case WaitKind.FIXED:
+                    # Blunt, and the artifact's to choose: an application with
+                    # nothing observable to wait for leaves nothing else.
+                    time.sleep(wait.timeout_ms / 1000)
+                case WaitKind.CONDITION if wait.condition is not None:
+                    if not self._wait_until(wait.condition, step, wait.timeout_ms):
+                        return (
+                            f"declared wait unmet after {wait.timeout_ms}ms: "
+                            f"{_describe(self._resolved(wait.condition))}"
+                        )
+        return None
 
     def _operator_performed(self, step: Step) -> StepReport:
         """The step a human did, entered in the run's own record.
@@ -700,6 +757,13 @@ class ReplayExecutor:
 
         report.ok = outcome.ok
         report.error = outcome.error
+        if report.ok:
+            # The step is not done when the action returns, it is done when the
+            # screen the artifact declared has arrived.
+            unmet = self._honour_waits(step)
+            if unmet is not None:
+                report.ok = False
+                report.error = unmet
         report.duration_ms = int((time.monotonic() - started) * 1000)
         # Kept even when the step succeeded. A confirmation the automation
         # answered on the way through is the sort of thing that has to be

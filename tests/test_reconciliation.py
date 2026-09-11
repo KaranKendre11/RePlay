@@ -7,10 +7,11 @@ no natural home in a per-area test file, so they are collected here.
 """
 
 import pytest
-from test_surface_protocol import MinimalSurface
+from test_surface_protocol import MEMBER_SCREEN, MinimalSurface
 from test_synthesis import run
 
 from replay.artifact import ArtifactStore
+from replay.artifact.conditions import ParamText, TextPresent
 from replay.artifact.schema import ParamSpec, ValueType, WaitKind, WaitSpec
 from replay.engine import InvalidArguments, ReplayExecutor, ReplayStatus, bind_parameters
 from replay.evidence import EvidenceRecorder
@@ -105,6 +106,54 @@ def test_a_declared_wait_timeout_is_the_budget_that_is_used(artifact, tmp_path):
     )
     _replay(Records("Current Balance", read="4,211.03"), declared, tmp_path)
     assert seen and set(seen) == {15_000}
+
+
+# ---------- and a condition wait is evaluated, not merely counted ----------
+
+
+def test_a_declared_condition_wait_is_evaluated_before_the_flow_moves_on(artifact, tmp_path):
+    """``WaitKind.CONDITION`` was validated by the schema and read by nothing.
+
+    ``_condition_waits_need_a_condition`` exists only to enforce a field, so a
+    capability could declare "this screen is not ready until the workframe shows
+    MEMBER INQUIRY", have that validated, serialised and reviewed, and be
+    replayed against whatever happened to be there.
+
+    Both halves matter, so both are asserted: a wait that is ignored and a wait
+    that always fails are equally useless. The satisfied one names a parameter,
+    which resolves only because waits are evaluated through ``_holds`` like
+    every other condition; the unsatisfiable one is bounded by its own
+    ``timeout_ms`` and fails the step it was declared on.
+    """
+
+    def waiting_for(condition):
+        wait = WaitSpec(kind=WaitKind.CONDITION, condition=condition, timeout_ms=200)
+        return artifact.model_copy(
+            update={
+                "steps": [
+                    artifact.steps[0].model_copy(update={"waits": [wait]}),
+                    *artifact.steps[1:],
+                ]
+            }
+        )
+
+    held = _replay(
+        MinimalSurface(MEMBER_SCREEN, read="4,211.03"),
+        waiting_for(TextPresent(text=ParamText(param="member_id"))),
+        tmp_path,
+        "wait-held",
+    )
+    assert held.status is ReplayStatus.SUCCESS
+
+    never = _replay(
+        MinimalSurface(MEMBER_SCREEN, read="4,211.03"),
+        waiting_for(TextPresent(text="LOADING")),
+        tmp_path,
+        "wait-never",
+    )
+    assert never.status is ReplayStatus.FAILED
+    assert never.failure.step_id == artifact.steps[0].id
+    assert "declared wait unmet" in never.failure.observed
 
 
 # ---------- a surface that cannot look is diagnosed, not a traceback ----------
