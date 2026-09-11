@@ -22,7 +22,7 @@ from replay.artifact import (
     json_schema,
     serialize,
 )
-from replay.artifact.conditions import TextPresent
+from replay.artifact.conditions import ParamText, TextPresent
 from replay.artifact.locators import (
     AnchoredTextLocator,
     LabelAdjacentLocator,
@@ -191,6 +191,42 @@ def test_undeclared_parameter_reference_is_rejected():
         artifact(inputs=[ParamSpec(name="other", description="Something else.")])
 
 
+def test_a_condition_may_not_name_a_parameter_that_does_not_exist():
+    """Since ``ParamText``, a checkpoint or a detector can name a parameter too.
+
+    That is now the load-bearing assertion in the system —
+    ``lookup_balance@1.1.0`` proves whose screen it read by naming the member
+    id — and the validator only looked at step values, so a checkpoint naming an
+    argument that does not exist loaded cleanly and failed at replay.
+    """
+    checkpointed = artifact().steps
+    checkpointed[1] = checkpointed[1].model_copy(
+        update={"checkpoint": TextPresent(text=ParamText(param="account_id"))}
+    )
+    with pytest.raises(ValidationError, match="undeclared parameter"):
+        artifact(steps=checkpointed)
+
+    with pytest.raises(ValidationError, match="undeclared parameter"):
+        artifact(
+            outcomes=[
+                BusinessOutcome(
+                    code="MEMBER_NOT_FOUND",
+                    detect=TextPresent(text=ParamText(param="account_id")),
+                    message="Not found.",
+                )
+            ]
+        )
+
+
+def test_a_condition_naming_a_declared_parameter_still_loads():
+    """The rule is that the reference resolves, not that conditions may not have one."""
+    steps = artifact().steps
+    steps[1] = steps[1].model_copy(
+        update={"checkpoint": TextPresent(text=ParamText(param="member_id"))}
+    )
+    assert artifact(steps=steps).steps[1].checkpoint.text.param == "member_id"
+
+
 def test_outputs_must_come_from_a_read_step():
     with pytest.raises(ValidationError, match="only read steps produce outputs"):
         artifact(
@@ -232,6 +268,32 @@ def test_success_must_be_verifiable():
     unchecked = [s.model_copy(update={"checkpoint": None}) for s in artifact().steps]
     with pytest.raises(ValidationError, match="checkpoint"):
         artifact(steps=unchecked)
+
+
+def test_a_risky_step_must_carry_its_own_proof_of_success():
+    """One checkpoint somewhere does not prove the step that did the damage worked.
+
+    That step is the one a policy refusal hands to an operator, and
+    ``_operator_performed`` reports ``ok`` unconditionally — it only says control
+    came back. So a capability whose sole checkpoint sits on some other step can
+    report ``success`` on an operator's word alone. ``open_subaccount`` was safe
+    only because s7 happens to be both the irreversible step and the
+    checkpointed one.
+    """
+    steps = artifact().steps
+    steps[0] = steps[0].model_copy(update={"risk": RiskClass.IRREVERSIBLE})
+    with pytest.raises(ValidationError, match="carry its own proof"):
+        artifact(steps=steps, policy=PolicyBlock(max_risk=RiskClass.IRREVERSIBLE))
+
+
+def test_a_risky_step_that_proves_itself_is_accepted():
+    """The rule is a checkpoint on the risky step, not a ban on risky steps."""
+    steps = artifact().steps
+    steps[0] = steps[0].model_copy(
+        update={"risk": RiskClass.IRREVERSIBLE, "checkpoint": TextPresent(text="Account opened")}
+    )
+    a = artifact(steps=steps, policy=PolicyBlock(max_risk=RiskClass.IRREVERSIBLE))
+    assert a.max_step_risk is RiskClass.IRREVERSIBLE
 
 
 def test_a_step_id_is_constrained_like_every_other_identifier():
@@ -308,7 +370,12 @@ def test_sensitive_parameters_may_not_carry_an_example():
 
 def test_policy_must_permit_the_risk_actually_recorded():
     risky = artifact().steps
-    risky[0] = risky[0].model_copy(update={"risk": RiskClass.IRREVERSIBLE})
+    # Checkpointed as well as reclassified: a step above safe risk now has to
+    # carry its own proof of success, and an artifact that fails that rule never
+    # reaches the policy rule this test is about.
+    risky[0] = risky[0].model_copy(
+        update={"risk": RiskClass.IRREVERSIBLE, "checkpoint": TextPresent(text="Account opened")}
+    )
     with pytest.raises(ValidationError, match=r"policy\.max_risk"):
         artifact(steps=risky, policy=PolicyBlock(max_risk=RiskClass.SAFE))
 

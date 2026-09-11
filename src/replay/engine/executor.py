@@ -69,6 +69,7 @@ from replay.evidence import EvidenceRecorder, new_run_id
 from replay.policy import PolicyRefused, RiskGate
 from replay.surface.base import (
     OPTIONAL_CAPABILITIES,
+    ActionOutcome,
     ControlNotHeld,
     DialogPolicy,
     DumpsMarkup,
@@ -160,24 +161,30 @@ SCREEN_EXPECTATION = {
 
 
 #: How far into a surface's error string we are willing to read, and from
-#: where. ``Surface.act`` reports a failure as a string, so the diagnosis has to
-#: be recovered from prose — but part of that prose is *artifact-supplied*:
-#: ``TargetNotFound`` interpolates ``target.description``. Searching the whole
-#: string let a control described as "refused-items queue link" turn locator
-#: drift into a policy refusal, which pages an operator with "should this happen
-#: at all" and skips screen classification, so a 500 on that step was
-#: mislabelled too. Only the leading exception name is read, which is the one
-#: part of the string the artifact cannot write.
+#: where. Part of that string is *artifact-supplied*: ``TargetNotFound``
+#: interpolates ``target.description``. Searching the whole string let a control
+#: described as "refused-items queue link" turn locator drift into a policy
+#: refusal, which pages an operator with "should this happen at all" and skips
+#: screen classification, so a 500 on that step was mislabelled too. Only the
+#: leading exception name is read, which is the one part of the string the
+#: artifact cannot write.
 ERROR_PREFIX = re.compile(r"^(\w+): ")
 
 
 def classify_error(error: str) -> FailureClass:
     """What a failed action's error string says about the *kind* of failure.
 
-    Prefix-anchored on purpose, and still a compromise: the protocol gives the
-    engine no structural channel for this, so a second surface implementation
-    that formats its errors differently loses ``TARGET_NOT_FOUND`` and with it
-    the drift diagnosis. The honest fix is a failure class on ``ActionOutcome``.
+    The fallback, and only the fallback. A surface that fills in
+    ``ActionOutcome.failure_class`` is believed instead, because it knows by
+    type what this can only infer from prose — see :meth:`_diagnose`.
+
+    Kept rather than deleted, because the field is optional and the surfaces
+    most likely to leave it empty are exactly the ones this is meant to serve:
+    somebody else's, written from the protocol. Reading the leading exception
+    name still recovers ``TARGET_NOT_FOUND`` from a surface that raises the
+    protocol's own exception and says nothing more, which is a better
+    degradation than none. What it cannot do is survive a surface that formats
+    its errors differently — which is why it is no longer the first thing asked.
     """
     if error.startswith(f"{PolicyRefused.__name__}: ") or error.startswith("refused "):
         # A refusal is not the application misbehaving, so it is kept apart
@@ -477,22 +484,22 @@ class ReplayExecutor:
                     return
                 continue
 
-            report = self._perform(step, bound)
+            report, outcome = self._perform(step, bound)
             result.steps.append(report)
 
             if not report.ok:
-                failure = self._diagnose(step, report)
+                failure = self._diagnose(step, report, outcome)
                 self._record(index, report)
                 if self._escalate(result, failure, step):
                     # A person intervened on the live session. Retry the step
                     # rather than assuming their fix put us where we needed to
                     # be — the whole point of a checkpoint is not to assume.
-                    report = self._perform(step, bound)
+                    report, outcome = self._perform(step, bound)
                     result.steps.append(report)
                     if not report.ok:
                         self._record(index, report)
                 if not report.ok:
-                    result.failure = self._diagnose(step, report)
+                    result.failure = self._diagnose(step, report, outcome)
                     return
 
             proceed = self._after_step(result, step, report)
@@ -697,7 +704,14 @@ class ReplayExecutor:
         """
         self.recorder.event("step", index=index, **report.to_dict())
 
-    def _perform(self, step: Step, bound: dict[str, str]) -> StepReport:
+    def _perform(self, step: Step, bound: dict[str, str]) -> tuple[StepReport, ActionOutcome]:
+        """Run one step, and hand back both what to log and what the surface said.
+
+        The outcome travels alongside the report because it carries something
+        the report has no field for: the surface's own reading of *why* a failed
+        action failed. That is :meth:`_diagnose`'s to weigh against the screen,
+        and the class it settles on is what the run is finally recorded under.
+        """
         started = time.monotonic()
         report = StepReport(
             step_id=step.id,
@@ -762,7 +776,7 @@ class ReplayExecutor:
         if outcome.read_value is not None:
             self._reads[step.id] = outcome.read_value
 
-        return report
+        return report, outcome
 
     # -- interpretation ---------------------------------------------------
 
@@ -892,13 +906,19 @@ class ReplayExecutor:
                 return FailureClass.APPLICATION_ERROR
         return None
 
-    def _diagnose(self, step: Step, report: StepReport) -> Failure:
+    def _diagnose(self, step: Step, report: StepReport, outcome: ActionOutcome) -> Failure:
         """Turn a failed action into a classified failure.
 
         The distinction that matters here is between the capability being wrong
         and the application being broken. A vanished control means drift; a 500
         means the far side fell over; an expired session means neither, and
         needs a human or a re-login rather than a retry.
+
+        The surface gets the first word on which of those it was, because it is
+        the only party that knows structurally: it caught the exception. Only
+        when it offers nothing is the class inferred from the error string, and
+        :func:`classify_error` says what that costs. Either way the *screen*
+        still overrules both, for everything except a refusal.
 
         When the screen decides the class, it also tells the story. Taking the
         class from the screen and the narrative from the exception produced
@@ -911,7 +931,7 @@ class ReplayExecutor:
         error = report.error or ""
         observed = self._observed()
 
-        from_step = classify_error(error)
+        from_step = outcome.failure_class or classify_error(error)
         if from_step is FailureClass.POLICY_REFUSED:
             from_screen = None
             failure_class = FailureClass.POLICY_REFUSED

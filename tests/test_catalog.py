@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 
 from replay.api import create_api, summarise
 from replay.artifact import ArtifactStore
-from replay.policy import Allowlist
+from replay.artifact.schema import RiskClass
+from replay.policy import Allowlist, PolicyRefused, RiskGate
 
 CAPABILITY = "lookup_balance"
 
@@ -230,7 +231,12 @@ def test_served_evidence_lands_where_the_server_was_told(tmp_path, monkeypatch, 
     """
     artifacts = Path("artifacts").resolve()
     monkeypatch.chdir(tmp_path)
-    served = TestClient(create_api(artifacts_dir=artifacts, allowlist=TEST_ALLOWLIST))
+    # Both guardrails are supplied rather than read from disk, for the same
+    # reason: there is no policy.toml in this tmpdir, and the server refuses to
+    # start without one.
+    served = TestClient(
+        create_api(artifacts_dir=artifacts, allowlist=TEST_ALLOWLIST, gate=RiskGate())
+    )
 
     served.post(
         f"/capabilities/{CAPABILITY}:invoke",
@@ -261,6 +267,39 @@ def test_the_api_cannot_permit_more_than_the_command_line(client, meridian_serve
     assert response.status_code == 422
     assert response.json()["failure"]["class"] == "policy_refused"
     assert response.json()["steps"] == [], "nothing was executed"
+
+
+def test_a_caller_cannot_raise_its_own_risk_ceiling(client, meridian_server):
+    """The previous test only proved the *default* refuses.
+
+    ``allow_risky`` and ``allow_irreversible`` used to be booleans in this
+    request body, so the refusal above was one JSON field away from not
+    happening — and the field was reachable by anyone who could reach the
+    endpoint. The ceiling is the deployment's now, so asking for more is not a
+    request the schema even accepts.
+    """
+    response = client.post(
+        "/capabilities/open_subaccount:invoke",
+        json={
+            "arguments": {
+                "member_id": "12345",
+                "product_code": "S02",
+                "opening_deposit": "50.00",
+            },
+            "target": meridian_server,
+            "allow_irreversible": True,
+        },
+    )
+    assert response.status_code == 422, "an unknown field is rejected, not honoured"
+    assert "allow_irreversible" in response.text
+
+
+def test_the_ceiling_comes_from_the_policy_file():
+    """And an absent or unreadable one is ``safe``, never more."""
+    assert RiskGate.from_dict({}).ceiling() is RiskClass.SAFE
+    assert RiskGate.from_dict({"ceiling": "irreversible"}).ceiling() is RiskClass.IRREVERSIBLE
+    with pytest.raises(PolicyRefused):
+        RiskGate.from_dict({"ceiling": "everything"})
 
 
 def test_escalation_is_off_by_default(client, meridian_server):
