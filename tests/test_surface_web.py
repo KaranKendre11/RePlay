@@ -31,6 +31,7 @@ from replay.artifact.locators import (
     Tier,
 )
 from replay.artifact.schema import Action, TargetSpec
+from replay.engine import FailureClass
 from replay.policy.allowlist import Allowlist
 from replay.surface import (
     Controller,
@@ -249,6 +250,9 @@ def test_failed_action_returns_an_outcome_rather_than_raising(surface):
     )
     assert not outcome.ok
     assert "TargetNotFound" in outcome.error
+    assert outcome.failure_class is FailureClass.TARGET_NOT_FOUND, (
+        "and says which kind, rather than leaving the engine to parse the string"
+    )
 
 
 def test_resolution_is_reported_on_every_targeted_action(surface):
@@ -381,6 +385,9 @@ def test_a_click_driven_navigation_is_checked_against_the_allowlist(meridian_ser
         outcome = s.act(Action.CLICK, SEARCH_BUTTON, expect_navigation=True)
 
         assert not outcome.ok
+        assert outcome.failure_class is FailureClass.POLICY_REFUSED, (
+            "a refusal stays a refusal rather than being flattened into a string"
+        )
         assert "refused" in outcome.error
         assert "/member" in outcome.error, "the route reached by the click, not the one typed"
         assert "blank" in outcome.note, "the run must not carry on observing that page"

@@ -34,6 +34,7 @@ from replay.artifact.conditions import AllOf, AnyOf, Condition, Not, TextAbsent,
 from replay.artifact.locators import Tier
 from replay.artifact.schema import Action, Extraction, TargetSpec
 from replay.engine import FailureClass, ReplayExecutor, ReplayStatus
+from replay.engine.executor import classify_error
 from replay.evidence import EvidenceRecorder
 from replay.policy import Allowlist
 from replay.surface import (
@@ -175,6 +176,57 @@ class MaskingSurface(MinimalSurface):
 
     def mask_in_screenshots(self, target: TargetSpec) -> None:
         self.masked.append(target)
+
+
+class FailingSurface(MinimalSurface):
+    """The minimal surface, but nothing it is given a target for works.
+
+    Stands in for the case the protocol exists to make possible and the engine
+    used to mishandle: somebody else's surface, wording its errors however it
+    likes. What it reports about a failure — a class, a string, or both — is
+    what each test varies. It keeps the outcome it handed back so a test can
+    assert what the engine was actually given rather than what it wishes it had
+    been.
+    """
+
+    def __init__(
+        self,
+        screen: str = "",
+        *,
+        error: str = "",
+        failure_class: FailureClass | None = None,
+    ) -> None:
+        super().__init__(screen)
+        self._error = error
+        self._failure_class = failure_class
+        self.reported: ActionOutcome | None = None
+
+    def act(
+        self,
+        action: Action,
+        target: TargetSpec | None = None,
+        value: str | None = None,
+        *,
+        expect_navigation: bool = False,
+        on_dialog: DialogPolicy | None = None,
+        timeout_ms: int = 10_000,
+        extraction: Extraction = Extraction.TEXT,
+        attribute: str | None = None,
+    ) -> ActionOutcome:
+        """Navigation still works; anything addressing a control does not.
+
+        So the failure lands on a step that resolved a locator, which is the
+        situation the drift diagnosis is about.
+        """
+        if target is None:
+            return super().act(action, target, value, timeout_ms=timeout_ms)
+        self.reported = ActionOutcome(
+            action=action,
+            ok=False,
+            error=self._error,
+            failure_class=self._failure_class,
+        )
+        return self.reported
 
 
 @pytest.fixture
@@ -386,6 +438,52 @@ def test_a_minimal_surface_can_still_tell_a_lost_session_from_a_drifted_locator(
     assert result.status is ReplayStatus.FAILED
     assert result.failure.failure_class is FailureClass.SESSION_LOST
     assert "SESSION EXPIRED" in result.failure.observed, "and the screen text is in the record"
+
+
+def test_a_surface_that_reports_a_failure_class_is_believed_over_its_own_prose(artifact, tmp_path):
+    """The diagnosis travels structurally, so the wording stops mattering.
+
+    This surface's error string is worded its own way — no exception name the
+    engine recognises — and read as prose it says only "something failed". The
+    class it reports says what actually happened, and that is what the failure
+    is filed as. Which is the whole point: a second surface no longer has to
+    format its errors the way ``WebSurface`` happens to, to keep
+    ``TARGET_NOT_FOUND`` and with it the drift diagnosis.
+    """
+    surface = FailingSurface(
+        MEMBER_SCREEN,
+        error="lookup gave up: the refused-items queue link is not on this screen",
+        failure_class=FailureClass.TARGET_NOT_FOUND,
+    )
+
+    result, _ = replay(surface, artifact, tmp_path, "minimal-structural")
+
+    assert classify_error(surface.reported.error) is FailureClass.ACTION_FAILED, (
+        "the prose on its own would have said something weaker"
+    )
+    assert result.failure.failure_class is FailureClass.TARGET_NOT_FOUND
+    assert result.failure.observed == surface.reported.error, "and the prose is still kept"
+
+
+def test_a_surface_that_reports_no_failure_class_is_still_read_for_one(artifact, tmp_path):
+    """The fallback, which is what keeps the field optional rather than required.
+
+    A surface written against the protocol before this field existed — or by
+    someone who saw no reason to fill it in — sets ``ok=False`` and an error
+    string and nothing else. Reading the leading exception name out of that
+    string is a worse diagnosis than being told, but it is a great deal better
+    than none, and deleting it would break exactly the third-party surfaces the
+    structural channel was added to serve.
+    """
+    surface = FailingSurface(
+        MEMBER_SCREEN,
+        error="TargetNotFound: could not resolve 'Member ID field': no strategies hit",
+    )
+
+    result, _ = replay(surface, artifact, tmp_path, "minimal-fallback")
+
+    assert surface.reported.failure_class is None, "the surface volunteered nothing"
+    assert result.failure.failure_class is FailureClass.TARGET_NOT_FOUND
 
 
 def test_the_markers_still_come_from_the_artifact_on_a_second_surface(artifact, tmp_path):

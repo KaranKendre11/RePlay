@@ -32,7 +32,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from replay.artifact.conditions import Condition
+from replay.artifact.conditions import Condition, parameters_in
 from replay.artifact.locators import Locator
 
 SCHEMA_VERSION = "1.0"
@@ -555,11 +555,44 @@ class CapabilityArtifact(Model):
 
     @model_validator(mode="after")
     def _param_refs_resolve(self) -> CapabilityArtifact:
+        """Every parameter this artifact names is one the caller can actually supply.
+
+        Step values were checked and conditions were not, which stopped being a
+        harmless gap the moment a condition could name a parameter. The
+        checkpoint on ``lookup_balance@1.1.0`` asserts the member id, and it is
+        what stops one member's balance being returned in answer to a question
+        about another; a typo in the name it asserts is the difference between
+        that proof and no proof at all. ``bind_parameters`` does refuse the
+        invocation, but the artifact is the reviewable unit and a reviewer
+        reading a validated document should not have to run it to find a
+        reference that cannot resolve.
+
+        Conditions are walked by :func:`~replay.artifact.conditions.parameters_in`
+        rather than by a second walker here: a condition kind added there is
+        then covered here for free, and two traversals that drifted apart would
+        disagree about what an artifact means.
+        """
         declared = {p.name for p in self.inputs}
         for step in self.steps:
-            if isinstance(step.value, ParamRef) and step.value.param not in declared:
+            named = {step.value.param} if isinstance(step.value, ParamRef) else set()
+            conditions = (
+                step.checkpoint,
+                *(w.condition for w in step.waits),
+                *(r.when for r in step.on_error),
+            )
+            for condition in conditions:
+                if condition is not None:
+                    named |= parameters_in(condition)
+            undeclared = sorted(named - declared)
+            if undeclared:
                 raise ValueError(
-                    f"step {step.id!r} references undeclared parameter {step.value.param!r}"
+                    f"step {step.id!r} references undeclared parameter(s) {undeclared}"
+                )
+        for outcome in self.outcomes:
+            undeclared = sorted(parameters_in(outcome.detect) - declared)
+            if undeclared:
+                raise ValueError(
+                    f"outcome {outcome.code!r} references undeclared parameter(s) {undeclared}"
                 )
         return self
 
@@ -612,15 +645,37 @@ class CapabilityArtifact(Model):
 
     @model_validator(mode="after")
     def _success_is_verifiable(self) -> CapabilityArtifact:
-        """At least one checkpoint must exist.
+        """A checkpoint must exist, and one must sit on every step that can do harm.
 
-        Without one, replay can only report "the clicks did not raise", which is
-        not the same as "the capability worked". The brief asks for a checkpoint
-        or success condition; this makes it structurally impossible to omit.
+        Without any checkpoint, replay can only report "the clicks did not
+        raise", which is not the same as "the capability worked". The brief asks
+        for a checkpoint or success condition; this makes it structurally
+        impossible to omit.
+
+        One checkpoint *somewhere* is not the same guarantee for the step that
+        does the damage. A step the risk gate refuses is escalated, and an
+        operator performs it on the live session; the automation does not repeat
+        it, so ``_operator_performed`` reports ``ok`` on the strength of control
+        coming back and nothing else. With nothing declared on that step there is
+        no proof but the operator's word — and "I have handled it" is a claim
+        about the operator rather than about the application. The engine does
+        refuse that, but only once the operator has already performed an
+        irreversible action against a bank; refusing the artifact is the one
+        moment the refusal is free. ``open_subaccount`` passes because s7
+        happens to carry the checkpoint, which until now was luck.
         """
         if not any(s.checkpoint is not None for s in self.steps):
             raise ValueError(
                 "at least one step must declare a checkpoint, otherwise success cannot be verified"
+            )
+        unproven = [
+            s.id for s in self.steps if s.risk is not RiskClass.SAFE and s.checkpoint is None
+        ]
+        if unproven:
+            raise ValueError(
+                f"step(s) {unproven} are above {RiskClass.SAFE.value!r} risk and declare no "
+                "checkpoint; a step that can do damage has to carry its own proof that it "
+                "worked, because it is the one a person may end up performing for us"
             )
         return self
 
