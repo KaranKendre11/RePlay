@@ -37,6 +37,7 @@ from replay.engine import (
 )
 from replay.evidence import EvidenceRecorder, new_run_id
 from replay.surface import WebSurface
+from replay.surface.base import Observation
 
 CAPABILITY = "lookup_balance"
 
@@ -480,6 +481,37 @@ def test_a_step_id_cannot_write_outside_the_evidence_directory(artifact, tmp_pat
     dom = (recorder.dir / result.failure.evidence["dom"]).resolve()
     assert dom.is_relative_to(recorder.dir.resolve()), dom
     assert dom.exists()
+
+
+def test_a_snapshot_name_cannot_write_outside_the_evidence_directory(tmp_path):
+    """The same escape, one layer down, where every caller routes through.
+
+    The engine scrubs its own step ids, so the test above passes with the
+    recorder's containment still purely lexical: `relative_to` accepted
+    `dom/../../pwned.html` and handed it back as the evidence reference, after
+    `mkdir(parents=True)` had already built the way out of the root. A guard in
+    one caller protects one caller.
+    """
+    with (
+        EvidenceRecorder("containment", root=tmp_path) as recorder,
+        pytest.raises(ValueError, match="escapes the run directory"),
+    ):
+        recorder.snapshot_text("dom/../../pwned.html", "<html>")
+
+    assert not (tmp_path / "pwned.html").exists()
+    assert not (recorder.dir / "dom").exists(), "nor was anything created on the way out"
+
+
+def test_a_capture_is_named_for_the_capture_and_not_for_a_step(tmp_path):
+    """One failing step reaches `_capture` more than once — policy refusal then
+    checkpoint, retry then give up — and the files were called `step-01` and
+    `step-02`, two names claiming two different steps of a flow that reached
+    one. The number the engine passes is a capture ordinal; the file now says
+    so."""
+    with EvidenceRecorder("capture-naming", root=tmp_path) as recorder:
+        refs = recorder.observation(2, Observation(url="", title="", frames=[]), "")
+
+    assert refs["observation"] == "observations/capture-02.json"
 
 
 def test_generated_run_ids_do_not_collide():

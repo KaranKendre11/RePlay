@@ -124,10 +124,22 @@ class EvidenceRecorder:
         self._transcript.write(json.dumps(record, ensure_ascii=False) + "\n")
         self._transcript.flush()
 
-    def observation(self, step: int, observation: Any, rendered: str) -> dict[str, str]:
-        """Persist a screenshot and the structured observation for one step."""
+    def observation(self, capture: int, observation: Any, rendered: str) -> dict[str, str]:
+        """Persist a screenshot and the structured observation for one capture.
+
+        The number is the capture's ordinal within the run, not a step id. It
+        was called ``step`` and the replay engine passes its capture counter, so
+        one step that was refused by policy and then failed its checkpoint wrote
+        ``step-01`` and ``step-02`` — two file names claiming two different
+        steps of a flow that had reached one. The discovery loop observes
+        exactly once per step, so the two readings coincided there and the
+        mismatch never showed.
+
+        Which step a capture belongs to is recorded in the event written beside
+        it, where it is a step id rather than a number that resembles one.
+        """
         refs: dict[str, str] = {}
-        stem = f"step-{step:02d}"
+        stem = f"capture-{capture:02d}"
 
         if getattr(observation, "screenshot", None):
             shot = self.steps_dir / f"{stem}.png"
@@ -141,11 +153,30 @@ class EvidenceRecorder:
         return refs
 
     def snapshot_text(self, name: str, text: str) -> str:
-        """Store a richer failure signal, e.g. a DOM dump."""
-        path = self.dir / name
+        """Store a richer failure signal, e.g. a DOM dump.
+
+        ``name`` comes from the caller and the caller builds it out of the
+        artifact — ``Step.id`` is unconstrained beyond a length — so it is
+        untrusted, and containment is enforced here rather than at each call
+        site. ``relative_to`` is a lexical operation: it accepted
+        ``dom/../../../../pwned.html`` and returned it as the evidence
+        reference, and ``mkdir(parents=True)`` had already built the way out of
+        the root before anything looked. Resolving first is what makes the check
+        about where the file actually lands.
+
+        The replay engine scrubs its step ids as well, which is worth keeping —
+        an escaping id should be neutralised rather than merely refused, or one
+        malformed artifact loses the whole failure capture. But a guard in one
+        caller protects one caller, and this is the choke point they all route
+        through.
+        """
+        root = self.dir.resolve()
+        path = (self.dir / name).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError(f"evidence name {name!r} escapes the run directory {self.dir}")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.redactor.scrub(text), encoding="utf-8")
-        return str(path.relative_to(self.dir))
+        return str(path.relative_to(root))
 
     def result(self, payload: dict[str, Any]) -> Path:
         path = self.dir / "result.json"
