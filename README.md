@@ -142,22 +142,24 @@ The target app can produce every runtime condition the brief names, on demand. A
 | Mode | Simulates | Replay reports |
 |---|---|---|
 | `not_found` | member does not exist | business outcome `MEMBER_NOT_FOUND` |
-| `validation` | server rejects a field | business outcome `VALIDATION_REJECTED` |
+| `validation` | server rejects a field | business outcome `VALIDATION_REJECTED` (write flow only — see below) |
 | `denied` | insufficient authority | business outcome `PERMISSION_DENIED` |
 | `dialog` | unexpected interstitial | recovered, recorded, run completes |
 | `slow` | 3s stall | absorbed by the declared waits |
 | `timeout` | session expired mid-flow | hard failure `SESSION_LOST` |
 | `error500` | application error | hard failure `APPLICATION_ERROR` |
 
-`targets/meridian/inject.py` declares the expected classification for each, and a test asserts
-replay actually agrees — so the app and the engine cannot drift apart silently.
+A field can only be rejected on a form submit, so `validation` is reachable through `open_subaccount`,
+not the read-only `lookup_balance`. `targets/meridian/inject.py` declares the expected classification
+for each mode, and a test asserts replay actually agrees — so the app and the engine cannot drift
+apart silently.
 
 ---
 
 ## Tests
 
 ```bash
-uv run pytest        # 342 tests, ~105s, no API key needed
+uv run pytest        # 446 tests, ~2 min, no API key needed
 uv run ruff check .
 ```
 
