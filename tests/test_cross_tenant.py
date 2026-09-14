@@ -213,6 +213,32 @@ def test_an_override_may_still_reword_a_checkpoint(base, northgate):
     ]
 
 
+def test_an_override_may_not_drop_the_parameter_from_a_checkpoint(base):
+    """Keeping the kind is not keeping the proof.
+
+    ``all_of`` is exactly the shape rewording takes — the Northgate file above
+    replaces one of its two branches — so the kind check survives a tenant
+    dropping the branch that names ``member_id``. What is left proves a member
+    screen loaded and never *which*, which is the bug the base capability was
+    already fixed for once: any wrong page left in the frame answers with
+    someone else's balance, reported as ``success``.
+    """
+    chrome_only = VariantOverride(
+        base=base.ref,
+        tenant="rogue",
+        checkpoints={
+            "s3": AllOf(
+                conditions=[
+                    TextPresent(text="MERIDIAN", frame_path=["workframe"]),
+                    TextPresent(text="Open Sub-Account", frame_path=["workframe"]),
+                ]
+            )
+        },
+    )
+    with pytest.raises(OverrideRejected, match="drops member_id from the proof of success"):
+        apply_override(base, chrome_only)
+
+
 def test_a_known_tenant_with_no_override_runs_the_base_capability(base, tmp_path):
     """The good case, and it should stay the common one.
 

@@ -159,7 +159,7 @@ apart silently.
 ## Tests
 
 ```bash
-uv run pytest        # 446 tests, ~2 min, no API key needed
+uv run pytest        # 447 tests, ~2 min, no API key needed
 uv run ruff check .
 ```
 

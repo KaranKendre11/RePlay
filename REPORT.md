@@ -106,9 +106,11 @@ degradation rather than confident mislabelling.
 change the entry point, a target, a checkpoint or an outcome detector — never the steps, inputs or
 outputs, which are the contract (`artifact/overrides.py`). `apply_override` re-derives that
 contract afterwards and refuses anything that moved: a tenant needing a different flow needs a
-different capability. A checkpoint may be *reworded*, not weakened, or a tenant file could swap the
-proof a sub-account opened for a condition that is always true. The specialised artifact carries
-the tenant in its ref, so a Northgate replay is evidence about Northgate alone.
+different capability. A checkpoint may be *reworded*, not weakened: the replacement has to assert
+the same kind of claim and keep any parameter the recording named, or a tenant file could swap the
+proof a sub-account opened for one that is always true — or, subtler, keep the shape and drop the
+member id, proving a member screen loaded and never whose. The specialised artifact carries the
+tenant in its ref, so a Northgate replay is evidence about Northgate alone.
 
 Demonstrated, not asserted: the Northgate variant renames the member field, the search button, the
 balance column and the form field, and mounts the product under `/tlr` — each breaking a different

@@ -38,7 +38,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from replay.artifact.conditions import Condition
+from replay.artifact.conditions import Condition, parameters_in
 from replay.artifact.schema import (
     IDENTIFIER,
     TENANT,
@@ -171,6 +171,18 @@ def _assert_success_is_still_provable(
     text; it may not become an absence, a negation, or an ``any_of`` with one
     true branch. A tenant whose success genuinely looks different in kind is
     not rewording the proof, and needs the reviewable act of a new version.
+
+    Kind alone is not enough once a checkpoint is compound, which is the shape
+    rewording actually takes: ``all_of`` survives having its branches replaced,
+    so a tenant file could keep the kind and drop the branch naming a
+    *parameter* — and that branch is the only assertion on the screen that says
+    whose screen it is. Losing it is the failure this capability was already
+    fixed for once: with only screen chrome asserted, any wrong page left in
+    the frame returns someone else's balance as ``success``. So a parameter the
+    recorded proof named has to survive rewording. That much *is* decidable —
+    it asks which parameters the condition references, not whether it can be
+    false — and it is the same property synthesis already prefers a checkpoint
+    for.
     """
     checkpoints = [
         (before.id, before.checkpoint, after.checkpoint)
@@ -189,6 +201,15 @@ def _assert_success_is_still_provable(
                 f"{before.kind!r}; an override may reword a checkpoint, not change what "
                 "it claims — otherwise a replay can report success having demonstrated "
                 "nothing"
+            )
+        dropped = parameters_in(before) - parameters_in(after)
+        if dropped:
+            raise OverrideRejected(
+                f"override drops {', '.join(sorted(dropped))} from the proof of success "
+                f"for {what!r}; the recorded proof names the caller's own argument, which "
+                "is the only part of it that says whose screen this is — reword the text "
+                "around it, but keep it, or the tenant's replay can succeed on someone "
+                "else's record"
             )
 
 
